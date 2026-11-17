@@ -234,7 +234,10 @@ export function createAudio() {
       const p = state && state.player;
       const inCar = !!(p && p.car);
       const speed = inCar ? Math.abs(p.car.speed || 0) : 0;
-      const speed01 = inCar ? Math.min(1, speed / 38) : 0;
+      // Use the car's own top speed (sports 46, truck 30), not a hardcoded
+      // 38 — otherwise a sports car never reaches full engine pitch.
+      const top = (inCar && p.car.topSpeed) || 38;
+      const speed01 = inCar ? Math.min(1, speed / top) : 0;
       const throttle = !!(input && input.keys && (input.keys.has('KeyW') || input.keys.has('ArrowUp')));
       this.engine(running ? speed01 : 0, throttle, !inCar || !running);
       const policeNear = state && state.policeNear === true;

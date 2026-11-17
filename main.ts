@@ -23,12 +23,25 @@ const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 // A screenshot-less entry is refused by the scorer and is a weak entry for the
 // judge anyway, so fail loudly instead of handing in an empty folder.
 const shotsDir = join(here, 'screenshots');
-if (!existsSync(shotsDir) || readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f)).length === 0) {
+const shotFiles = existsSync(shotsDir)
+  ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f))
+  : [];
+if (shotFiles.length === 0) {
   throw new Error('screenshots/ is missing or has no PNG/JPEG files — run tests/shots.py first');
+}
+// The scorer refuses more than 4 screenshots; fail here with a clear
+// message instead of handing in an entry it would reject.
+if (shotFiles.length > 4) {
+  throw new Error(`screenshots/ has ${shotFiles.length} images (max 4) — remove the extras, the first 4 by name are the dossier`);
 }
 
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
+// The entry is useless without its entry point: refuse a broken copy
+// instead of handing in a game folder the judge cannot open.
+if (!existsSync(join(out, 'game', 'index.html'))) {
+  throw new Error('game/index.html missing after copy — the game folder is incomplete');
+}
 mkdirSync(join(out, 'screenshots'), { recursive: true });
 cpSync(shotsDir, join(out, 'screenshots'), { recursive: true });
 

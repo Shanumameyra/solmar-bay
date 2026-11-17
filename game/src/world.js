@@ -173,7 +173,9 @@ export function createWorld(seed = 7) {
   function damagePlayer(n) {
     const p = state.player;
     if (!p || p.invuln > 0) return state.health;
-    p.hp = Math.max(0, (p.hp || 100) - n);
+    // ?? not ||: hp 0 is a real value (dead), and (0 || 100) would
+    // resurrect the player to ~100 HP on a second hit in the same frame.
+    p.hp = Math.max(0, (p.hp ?? 100) - n);
     state.health = p.hp;
     state.events.push({ type: 'damage', text: `-${n} HP`, t: state.time });
     if (p.hp <= 0) state.events.push({ type: 'playerDown', text: 'WASTED', t: state.time });

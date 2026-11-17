@@ -314,8 +314,13 @@ export function createPolice() {
       const pcar = player.carId != null
         ? (state.cars || []).find((c) => c.id === player.carId) : null;
       if (pcar) pcar.driver = null;
-      player.inCar = false;
+      // Fully get out of the car: leaving player.car set (or onFoot false)
+      // makes stepPlayer sync the player back to the busted car's position
+      // on the next step, undoing the precinct respawn.
+      player.car = null;
       player.carId = null;
+      player.inCar = false;
+      player.onFoot = true;
       player.x = precinct.x;
       player.z = precinct.z;
       player.hp = player.maxHp || 100;

@@ -94,16 +94,29 @@ export function stepPlayer(state, input, dt, world, systems = {}) {
     const nx = p.x + (fx / len) * p.speed * dt;
     const nz = p.z + (fz / len) * p.speed * dt;
     const resolved = collideCircle(world.city, nx, nz, CONFIG.PLAYER.RADIUS);
-    // Soft car collision: slide around parked/traffic cars.
+    // Soft car collision: slide around parked/traffic cars. The car is an
+    // oriented box (length along its forward, width across), not a circle
+    // of radius len/2 — a circle that big blocks the player from walking
+    // alongside a long truck's door or stepping out of it.
     let rx = resolved.x, rz = resolved.z;
     for (const car of state.cars) {
       const dx = rx - car.x, dz = rz - car.z;
-      const minD = (car.len / 2) + CONFIG.PLAYER.RADIUS;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < minD * minD && d2 > 0.0001) {
-        const d = Math.sqrt(d2);
-        rx = car.x + (dx / d) * minD;
-        rz = car.z + (dz / d) * minD;
+      const fx = Math.sin(car.angle), fz = Math.cos(car.angle);
+      const rgtx = -fz, rgtz = fx;
+      const along = dx * fx + dz * fz;       // forward axis
+      const across = dx * rgtx + dz * rgtz;  // side axis
+      const halfL = car.len / 2 + CONFIG.PLAYER.RADIUS;
+      const halfW = car.wid / 2 + CONFIG.PLAYER.RADIUS;
+      if (Math.abs(along) >= halfL || Math.abs(across) >= halfW) continue;
+      // Push out along the smaller penetration axis.
+      if (halfL - Math.abs(along) < halfW - Math.abs(across)) {
+        const s = along < 0 ? -halfL : halfL;
+        rx = car.x + fx * s + rgtx * across;
+        rz = car.z + fz * s + rgtz * across;
+      } else {
+        const s = across < 0 ? -halfW : halfW;
+        rx = car.x + fx * along + rgtx * s;
+        rz = car.z + fz * along + rgtz * s;
       }
     }
     p.x = rx;

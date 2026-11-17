@@ -111,6 +111,33 @@ async def main():
         if not drove or driven < 10:
             print("  FAIL: car barely drove"); ok = False
 
+        print("== exit the car (E) ==")
+        # Let the car roll to a near-stop first, so the exit position is
+        # measured against where the car actually is.
+        try:
+            await page.wait_for_function(
+                "() => Math.abs(window.__GTA.state.player.speed) < 2", timeout=20000)
+        except Exception:
+            print("  (car did not slow down; continuing anyway)")
+        car_pos = await page.evaluate("({x: window.__GTA.state.player.car.x, z: window.__GTA.state.player.car.z})")
+        await page.keyboard.down("KeyE")
+        await page.wait_for_timeout(600)
+        await page.keyboard.up("KeyE")
+        await page.wait_for_timeout(500)
+        exit_state = await page.evaluate("""(carPos) => {
+            const p = window.__GTA.state.player;
+            return {
+                inCar: p.inCar,
+                onFoot: p.onFoot,
+                dist: Math.hypot(p.x - carPos.x, p.z - carPos.z),
+            };
+        }""", arg=car_pos)
+        print(f"  inCar={exit_state['inCar']} onFoot={exit_state['onFoot']} distToCar={exit_state['dist']:.1f} m")
+        if exit_state["inCar"] or not exit_state["onFoot"]:
+            print("  FAIL: E did not exit the car"); ok = False
+        if exit_state["dist"] > 5:
+            print("  FAIL: player ended up far from the car after exiting"); ok = False
+
         print("== wanted heat (debug addHeat) ==")
         await page.evaluate("window.__GTA.debug.addHeat(2)")
         await page.wait_for_timeout(1500)

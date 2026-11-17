@@ -177,7 +177,20 @@ function stepPed(ped, dt, state, world) {
     }
     return;
   }
-  if (ped.state === 'down') return; // downed peds stay down (combat.js)
+  // Downed peds: cops stay down (the story beat), civilians get back up
+  // after downT — the field was set by combat.js but never read, so every
+  // downed ped lay there forever.
+  if (ped.state === 'down') {
+    if (ped.isCop) return;
+    ped.downT = (ped.downT ?? 20) - dt;
+    if (ped.downT <= 0) {
+      ped.state = 'walk';
+      ped.hp = 50;
+      ped.path = null;
+      ped.flee = 0;
+    }
+    return;
+  }
   ped.state = 'walk';
   // Flee trigger: gunfire nearby (a shot event) or wanted heat close by.
   const px = state.player.x, pz = state.player.z;

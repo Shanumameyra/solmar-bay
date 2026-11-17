@@ -153,7 +153,9 @@ export function createCombat() {
     },
 
     damagePed(state, ped, dmg, kind) {
-      ped.hp = (ped.hp || 100) - dmg;
+      // ?? not ||: hp 0 is a real value (down), and (0 || 100) would
+      // resurrect a downed ped to ~100 HP on a second hit.
+      ped.hp = (ped.hp ?? 100) - dmg;
       state.fxBurst = { type: 'stars', x: ped.x, y: 1.4, z: ped.z };
       if (ped.isCop) {
         // Hitting a cop is a crime.
@@ -202,7 +204,9 @@ export function createCombat() {
 
     damagePlayer(state, dmg, source) {
       const player = state.player;
-      player.hp = Math.max(0, (player.hp || 100) - dmg);
+      // ?? not ||: hp 0 is a real value, and (0 || 100) would resurrect a
+      // dead player to ~100 HP on a second hit in the same frame.
+      player.hp = Math.max(0, (player.hp ?? 100) - dmg);
       state.health = player.hp;
       state.shakeTrauma = Math.min(1, (state.shakeTrauma || 0) + 0.25);
       pushEvent(state, 'sfx', 'punch');
@@ -228,8 +232,12 @@ export function createCombat() {
       const pcar = player.carId != null
         ? (state.cars || []).find((c) => c.id === player.carId) : null;
       if (pcar) pcar.driver = null;
-      player.inCar = false;
+      // Fully get out of the car (see police.js bust): otherwise stepPlayer
+      // syncs the player back to the wrecked car's position next step.
+      player.car = null;
       player.carId = null;
+      player.inCar = false;
+      player.onFoot = true;
       player.x = hospital.x;
       player.z = hospital.z;
       player.hp = player.maxHp || 100;

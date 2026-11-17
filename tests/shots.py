@@ -50,6 +50,34 @@ async def main():
             print(f"{fname}: {size} bytes ({flag}), wanted={gta.get('wanted')} "
                   f"money=${gta.get('money')} mission={gta.get('mission')!r} "
                   f"policeCars={gta.get('policeCars')}")
+            # Staging checks: the cover must drive on the beach (sea in
+            # frame) with pedestrians near it, and the onfoot shot must
+            # have pedestrians in front of the player.
+            if name == "cover":
+                st = await page.evaluate("""() => {
+                    const s = window.__GTA.state;
+                    const car = s.player.car;
+                    const near = (s.peds || []).filter(p => car && Math.hypot(p.x - car.x, p.z - car.z) < 40).length;
+                    return { carX: car ? car.x : null, nearPeds: near, wanted: s.wanted };
+                }""")
+                if st["carX"] is None or st["carX"] >= -168:
+                    print(f"  !! cover car is not on the beach (x={st['carX']})"); ok = False
+                if st["nearPeds"] < 2:
+                    print(f"  !! cover has only {st['nearPeds']} peds near the frame"); ok = False
+                if st["wanted"] != 0:
+                    print(f"  !! cover gained heat (wanted={st['wanted']})"); ok = False
+            if name == "onfoot":
+                st = await page.evaluate("""() => {
+                    const s = window.__GTA.state;
+                    const p = s.player;
+                    const ahead = (s.peds || []).filter(ped => {
+                        const dz = ped.z - p.z, dx = ped.x - p.x;
+                        return dz < -2 && dz > -40 && Math.abs(dx) < 15;
+                    }).length;
+                    return { ahead };
+                }""")
+                if st["ahead"] < 2:
+                    print(f"  !! onfoot has only {st['ahead']} peds in front"); ok = False
         await browser.close()
     print("errors:", errs if errs else "none")
     if errs:

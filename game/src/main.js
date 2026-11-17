@@ -200,13 +200,13 @@ function runGame() {
       state.screen = 'play';
       screen = 'busted';
       endTimer = 2.5;
-      announce('Busted by the SBPD. $200 fine.');
+      announce(`Busted by the SBPD. $${CONFIG.WANTED.BUST_FINE} fine.`);
       doSave();
     } else if (state.screen === 'wasted' && screen === 'play') {
       state.screen = 'play';
       screen = 'wasted';
       endTimer = 2.5;
-      announce('Wasted. $100 hospital bill.');
+      announce(`Wasted. $${CONFIG.COMBAT.DEATH_FINE} hospital bill.`);
       doSave();
     }
     input.endFrame();

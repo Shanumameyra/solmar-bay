@@ -115,12 +115,16 @@ export function collideCars(car, world) {
     const d2 = dx * dx + dz * dz;
     if (d2 >= minD * minD || d2 === 0) continue;
     const d = Math.sqrt(d2);
-    const push = (minD - d) / 2;
     const ux = dx / d, uz = dz / d;
+    // A parked car is braked: it does not get shoved. The moving car takes
+    // the full push instead of half (it is the one that has to give way).
+    const push = other.isParked ? (minD - d) : (minD - d) / 2;
     car.x += ux * push;
     car.z += uz * push;
-    other.x -= ux * push;
-    other.z -= uz * push;
+    if (!other.isParked) {
+      other.x -= ux * push;
+      other.z -= uz * push;
+    }
     const impact = Math.abs(car.speed - other.speed);
     if (impact > 3) {
       damageCar(car, CONFIG.CAR.DAMAGE_PER_HIT * 0.5, world);

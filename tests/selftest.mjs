@@ -466,6 +466,149 @@ console.log('== Staged shots + determinism ==');
 }
 
 // ---------------------------------------------------------------------------
+console.log('== Finisher polish (18 Nov) ==');
+{
+  // Parked cars sit on a street centreline and face along it, so stealing
+  // one and driving straight never stalls against a wall.
+  const world = createWorld(7);
+  const parked = world.state.cars.filter((c) => c.isParked);
+  check('8 parked cars', parked.length === 8, parked.length + ' parked');
+  let parkedOk = true;
+  for (const car of parked) {
+    const onNs = CONFIG.CITY.STREETS.includes(car.x);
+    const onEw = CONFIG.CITY.STREETS.includes(car.z);
+    const alongNs = Math.abs(Math.sin(car.angle)) < 0.01; // faces north/south
+    const alongEw = Math.abs(Math.cos(car.angle)) < 0.01; // faces east/west
+    // On a north-south street (x is a street line) the car must face
+    // north/south; on an east-west street (z is a street line) east/west.
+    // The beach car (x=-176) sits on open sand, facing south along it.
+    const ok = car.x === -176
+      ? (Math.abs(car.angle) < 0.01)
+      : (onNs && alongNs) || (onEw && alongEw);
+    if (!ok) { parkedOk = false; console.log(`  parked ${car.kind} at (${car.x},${car.z}) angle ${car.angle.toFixed(2)} is off-street / crosswise`); }
+  }
+  check('Parked cars face along their street', parkedOk);
+  // Driving straight out of every parked spot for 3 s covers ground
+  // (no wall within ~9 m ahead).
+  let driveOk = true;
+  for (const spot of world.city.spawnPoints.parked) {
+    const w2 = createWorld(7);
+    const sys2 = makeSystems();
+    const inp2 = createInput(null);
+    w2.state.systems = sys2;
+    const car = w2.state.cars.find((c) => c.isParked && c.x === spot.x && c.z === spot.z);
+    if (!car) { driveOk = false; console.log(`  no parked car at (${spot.x},${spot.z})`); continue; }
+    w2.teleport(car.x, car.z, car.angle, car);
+    inp2.keys.add('KeyW');
+    const bx = car.x, bz = car.z;
+    stepN(w2, inp2, sys2, 180);
+    const d = Math.hypot(car.x - bx, car.z - bz);
+    if (d < 20) { driveOk = false; console.log(`  parked ${car.kind} at (${spot.x},${spot.z}) only drove ${d.toFixed(1)} m in 3 s`); }
+  }
+  check('Every parked car drives clear for 3 s', driveOk);
+
+  // Bright golden hour palette.
+  check('Sun is bright (intensity >= 3)', CONFIG.PALETTE.SUN_INTENSITY >= 3, String(CONFIG.PALETTE.SUN_INTENSITY));
+  check('Hemisphere light is bright (>= 1)', CONFIG.PALETTE.HEMI_INTENSITY >= 1, String(CONFIG.PALETTE.HEMI_INTENSITY));
+  check('Fog is far (near >= 200)', CONFIG.RENDER.FOG_NEAR >= 200, String(CONFIG.RENDER.FOG_NEAR));
+
+  // Bust while driving: on foot at the precinct, and stepping the world
+  // must NOT snap the player back into the car.
+  {
+    const w3 = createWorld(7);
+    const sys3 = makeSystems();
+    const inp3 = createInput(null);
+    w3.state.systems = sys3;
+    const sedan = w3.state.cars.find((c) => c.kind === 'sedan');
+    w3.teleport(-144, -60, 0, sedan);
+    sys3.police.addHeat(2, 'test', w3.state);
+    sys3.police.bust(w3.state);
+    const p3 = w3.state.player;
+    check('Bust in a car puts the player on foot', p3.onFoot === true && p3.car === null && p3.inCar === false,
+      `onFoot=${p3.onFoot} car=${p3.car ? 'set' : 'null'} inCar=${p3.inCar}`);
+    stepN(w3, inp3, sys3, 60);
+    check('Bust in a car stays at the precinct after stepping',
+      Math.hypot(p3.x - LANDMARKS.precinct.x, p3.z - LANDMARKS.precinct.z) < 2,
+      `(${p3.x.toFixed(0)},${p3.z.toFixed(0)}) vs precinct (${LANDMARKS.precinct.x},${LANDMARKS.precinct.z})`);
+  }
+
+  // Death while driving: on foot at the hospital, no snap-back.
+  {
+    const w4 = createWorld(7);
+    const sys4 = makeSystems();
+    const inp4 = createInput(null);
+    w4.state.systems = sys4;
+    const sedan = w4.state.cars.find((c) => c.kind === 'sedan');
+    w4.teleport(-144, -60, 0, sedan);
+    w4.state.player.hp = 1;
+    w4.damagePlayer(10);
+    stepN(w4, inp4, sys4, 5);
+    const p4 = w4.state.player;
+    check('Death in a car respawns on foot at the hospital',
+      p4.onFoot === true && p4.car === null && p4.hp === 100
+      && Math.hypot(p4.x - LANDMARKS.hospital.x, p4.z - LANDMARKS.hospital.z) < 2,
+      `onFoot=${p4.onFoot} hp=${p4.hp} at (${p4.x.toFixed(0)},${p4.z.toFixed(0)})`);
+  }
+
+  // Cash pickups never spawn inside a building collider.
+  {
+    const w5 = createWorld(7);
+    const sys5 = makeSystems();
+    let pickupsOk = true;
+    for (let i = 0; i < 50; i += 1) {
+      const pk = sys5.missions.newPickup(w5.state);
+      if (w5.city && w5.city.colliders) {
+        const inside = w5.city.colliders.some((c) => pk.x > c.minX && pk.x < c.maxX && pk.z > c.minZ && pk.z < c.maxZ);
+        if (inside) { pickupsOk = false; console.log(`  pickup at (${pk.x.toFixed(0)},${pk.z.toFixed(0)}) inside a building`); break; }
+      }
+    }
+    check('Cash pickups spawn outside buildings (50 samples)', pickupsOk);
+  }
+
+  // Save: a newer primary must not block the .bak fallback.
+  {
+    const store = fakeStorage();
+    const w6 = createWorld(7);
+    w6.state.money = 555;
+    saveGame(w6.state, store);
+    w6.state.money = 777;
+    saveGame(w6.state, store); // the 555 save is now the .bak
+    store.setItem('solmar-bay-save-v1', JSON.stringify({ version: 99, money: 1 }));
+    const loaded = loadSave(store);
+    check('Newer primary falls back to .bak', loaded.ok === true && loaded.data.money === 555 && loaded.fromBak === true,
+      loaded.ok ? `money=${loaded.data.money} fromBak=${loaded.fromBak}` : 'no fallback');
+  }
+
+  // Cover staging: the car drives on the beach (sea on the right, city on
+  // the left) and pedestrians are placed in frame.
+  {
+    const w7 = createWorld(7);
+    const sys7 = makeSystems();
+    w7.state.systems = sys7;
+    const info = stageShot('cover', w7, sys7);
+    const car = w7.state.player.car;
+    check('Cover car drives on the beach (x < -168)', !!car && car.x < -168, car ? `x=${car.x.toFixed(0)}` : 'no car');
+    const nearPeds = (w7.state.peds || []).filter((p) => car && Math.hypot(p.x - car.x, p.z - car.z) < 40).length;
+    check('Cover has pedestrians near the frame', nearPeds >= 2, nearPeds + ' peds within 40 m');
+    check('Cover stays clean (wanted 0)', info.wanted === 0, 'wanted=' + info.wanted);
+  }
+  // Onfoot staging: pedestrians stand in the plaza in front of the player.
+  {
+    const w8 = createWorld(7);
+    const sys8 = makeSystems();
+    w8.state.systems = sys8;
+    stageShot('onfoot', w8, sys8);
+    const p8 = w8.state.player;
+    const ahead = (w8.state.peds || []).filter((ped) => {
+      const dx = ped.x - p8.x, dz = ped.z - p8.z;
+      // In front (north, -z) and within 40 m.
+      return dz < -2 && dz > -40 && Math.abs(dx) < 15;
+    }).length;
+    check('Onfoot has pedestrians in front of the player', ahead >= 2, ahead + ' peds ahead');
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('== Dossier caps (game/ + screenshots/) ==');
 {
   const gameDir = join(ROOT, 'game');

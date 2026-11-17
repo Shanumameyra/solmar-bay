@@ -22,14 +22,18 @@ export function createRandom(seed) {
   }
   return {
     next,
+    // Re-seed in place, so a subsystem can restart its stream.
+    reset(newSeed) {
+      state = (typeof newSeed === 'string' ? hashSeed(newSeed) : (newSeed >>> 0)) || 1;
+    },
     // Float in [lo, hi).
     range(lo, hi) { return lo + next() * (hi - lo); },
-    // Integer in [0, n).
-    int(n) { return Math.floor(next() * n); },
+    // Integer in [0, n); 0 when n is not positive (never a negative index).
+    int(n) { return n > 0 ? Math.floor(next() * n) : 0; },
     // Integer in [lo, hi] inclusive.
     intRange(lo, hi) { return lo + Math.floor(next() * (hi - lo + 1)); },
-    // Random element of an array.
-    pick(arr) { return arr[Math.floor(next() * arr.length)]; },
+    // Random element of an array; undefined for an empty array.
+    pick(arr) { return arr.length ? arr[Math.floor(next() * arr.length)] : undefined; },
     // True with probability p.
     chance(p) { return next() < p; },
     // Fisher-Yates shuffle of a copy.

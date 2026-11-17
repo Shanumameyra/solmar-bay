@@ -106,6 +106,7 @@ function clampInt(v, lo, hi) {
 
 export function loadSave(storage) {
   const store = storage || defaultStorage();
+  let newer = null;
   for (const key of [SAVE_KEY, SAVE_KEY + '.bak']) {
     let json = null;
     try {
@@ -115,8 +116,11 @@ export function loadSave(storage) {
     }
     const parsed = parseSave(json);
     if (parsed && !parsed.newer) return { ok: true, data: parsed, fromBak: key !== SAVE_KEY };
-    if (parsed && parsed.newer) return { ok: false, newer: true, version: parsed.version };
+    // A newer primary must not block the .bak fallback: remember it and
+    // keep looking; only report "newer" when nothing usable exists.
+    if (parsed && parsed.newer && !newer) newer = parsed;
   }
+  if (newer) return { ok: false, newer: true, version: newer.version };
   return { ok: false, empty: true };
 }
 

@@ -1,15 +1,19 @@
 // Solmar Bay — minimap (Worker B). 2D canvas, north-up, fixed orientation.
 // Streets, beach + water, city blocks, player arrow, traffic (grey), police
 // (blue/red flashing), mission marker (yellow pulsing), taxi (green),
-// cash pickups (gold). World is ~400x400 m centred on 0,0; north is -z
-// (top of the canvas). No rotation — the map stays readable while driving.
+// cash pickups (gold). The map covers ~460x460 m centred on 0,0 (the city
+// plus a strip of sea to the west); north is -z (top of the canvas). No
+// rotation — the map stays readable while driving.
 // Colliders are {minX,maxX,minZ,maxZ} (city.js); streets are
 // CONFIG.CITY.STREETS (48 m grid). Forward = (sin(angle), cos(angle)), so
 // the player arrow rotates by (PI - yaw) from the up-pointing triangle.
 
 import { CONFIG } from './config.js';
 
-const WORLD = CONFIG.CITY.HALF; // 200
+// The map covers a little more than the city (HALF + 30) so the sea
+// (x < -200) and the pier (x -212) are actually visible: at exactly HALF
+// the sea fill was zero-width and the pier line ran off-canvas.
+const WORLD = CONFIG.CITY.HALF + 30; // 230
 const STREETS = CONFIG.CITY.STREETS;
 
 export function createMinimap(canvas) {

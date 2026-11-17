@@ -11,7 +11,7 @@ An open-world crime game in the browser, built for the make.fun **gta6-01 "Make 
 ## How to play
 
 - **Start:** press Enter (or click Start) on the title screen.
-- **Move:** WASD to walk (Shift to run), mouse to look. W/S drive a car once you're in one; A/D steer, Space is the handbrake.
+- **Move:** WASD to walk (Shift to run), mouse to look. W/S drive a car once you're in one; A/D steer, Shift is the handbrake.
 - **Enter / steal a car:** walk up to one and press E. Stealing in front of a pedestrian or a police car raises your wanted level.
 - **Missions:** go to Rosa's café (follow the yellow marker) to start a job. Three story missions — *The Pickup* ($300), *Hot Wheels* ($500), *The Getaway* ($800) — plus repeatable taxi fares ($45) and cash pickups ($25).
 - **Wanted:** the SBPD chases you with cars (1–5 stars) and on-foot cops (3+ stars). Lose them by staying out of sight for 15 s, then the heat cools one star per 10 s. Get caught and you're Busted (−$200, respawn at the precinct). Die and you're Wasted (−$100, respawn at the hospital).
@@ -23,7 +23,7 @@ An open-world crime game in the browser, built for the make.fun **gta6-01 "Make 
 | Key | Action |
 | --- | --- |
 | WASD | Walk / drive |
-| Shift | Run |
+| Shift | Run on foot / handbrake while driving |
 | Mouse | Look (click to lock the pointer) |
 | E | Enter / exit a car |
 | F | Punch |
@@ -46,7 +46,7 @@ Open http://localhost:8080 and press Enter. No build step, no network — the ga
 
 - Three.js (vendored `three.module.min.js`) for the 3D city: instanced buildings with lit windows, a 1024×1024 painted ground texture (asphalt, sidewalks, lane dashes, sand, plaza), the sea, the pier and streetlights.
 - Fixed 1/60 s simulation: player, arcade car physics, traffic loops, pedestrian A* fleeing, police pursuit + roadblocks + busts, a 3-mission story chain, taxi jobs, cash pickups, combat, save/load, WebAudio synth (engine hum, sirens, SFX, music pad) and a particle / camera-shake effects layer.
-- Screenshots are staged deterministically (`game/src/shots.js`, `?shot=cover|onfoot|chase|mission&seed=7`) so the four dossier images reproduce byte for byte.
+- Screenshots are staged deterministically (`game/src/shots.js`, `?shot=cover|onfoot|chase|mission&seed=7`) so the four dossier images reproduce byte for byte. The cover is a beach drive (sea on the right, city on the left, pier ahead); onfoot is the market plaza with pedestrians in frame; chase is a 3-star SBPD pursuit down a downtown street; mission is M1 at the docks.
 
 ## Tests
 

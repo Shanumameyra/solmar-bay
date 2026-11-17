@@ -23,10 +23,12 @@ function makeSkyTexture() {
   c.width = 4; c.height = 256;
   const g = c.getContext('2d');
   const grad = g.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, '#2e4a7a');
-  grad.addColorStop(0.45, '#7a6a9a');
-  grad.addColorStop(0.62, '#ffb36b');
-  grad.addColorStop(1, '#ff8a5a');
+  // Bright golden hour: light blue overhead, pale lavender mid-sky, warm
+  // gold at the horizon (the first pass was navy + purple and read gloomy).
+  grad.addColorStop(0, '#5a8ac0');
+  grad.addColorStop(0.45, '#a8a0c8');
+  grad.addColorStop(0.62, '#ffc27a');
+  grad.addColorStop(1, '#ffb36b');
   g.fillStyle = grad;
   g.fillRect(0, 0, 4, 256);
   const tex = new THREE.CanvasTexture(c);
@@ -40,7 +42,8 @@ export function createRenderer(canvas) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  // Brighter exposure for the sunlit golden-hour look (was 1.05, gloomy).
+  renderer.toneMappingExposure = 1.3;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
@@ -55,9 +58,10 @@ export function createRenderer(canvas) {
     CONFIG.RENDER.CAMERA_NEAR, CONFIG.RENDER.CAMERA_FAR,
   );
 
-  // Golden-hour sun: low from the west, warm; only the sun casts shadows.
+  // Golden-hour sun: high from the west, warm; only the sun casts shadows.
+  // Raised (was y=95) so shadows are shorter and the streets stay bright.
   const sun = new THREE.DirectionalLight(PAL.SUN, PAL.SUN_INTENSITY);
-  sun.position.set(-160, 95, 70);
+  sun.position.set(-140, 150, 60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(CONFIG.RENDER.SHADOW_MAP, CONFIG.RENDER.SHADOW_MAP);
   sun.shadow.camera.left = -230;

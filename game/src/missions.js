@@ -10,6 +10,7 @@
 
 import { CONFIG } from './config.js';
 import { createCar } from './vehicle.js';
+import { hitsCollider } from './city.js';
 
 const MISSIONS = CONFIG.MISSIONS;
 const TAXI_FARE = CONFIG.TAXI_FARE;
@@ -259,9 +260,18 @@ export function createMissions() {
     },
 
     newPickup(state) {
-      const x = (Math.random() * 2 - 1) * 170;
-      const z = (Math.random() * 2 - 1) * 170;
-      return { x, z, amount: CASH_AMOUNT, taken: false, respawnT: 0 };
+      // A pickup inside a building collider can never be collected (the
+      // player cannot walk through walls), so retry until the spot is
+      // reachable. Without colliders (a bare test state) take the first.
+      for (let i = 0; i < 12; i += 1) {
+        const x = (Math.random() * 2 - 1) * 170;
+        const z = (Math.random() * 2 - 1) * 170;
+        if (!state.colliders || !hitsCollider(state, x, z, 1)) {
+          return { x, z, amount: CASH_AMOUNT, taken: false, respawnT: 0 };
+        }
+      }
+      // Fallback: the market plaza is open ground, always reachable.
+      return { x: 0, z: 24, amount: CASH_AMOUNT, taken: false, respawnT: 0 };
     },
 
     taxiStep(dt, state) {

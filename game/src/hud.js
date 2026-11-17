@@ -155,7 +155,9 @@ export function createHud(doc) {
       // Speed (km/h).
       const kmh = Math.round(Math.abs(p.speed || 0) * 3.6);
       this.set('speed', String(kmh));
-      this.set('clock', '17:40');
+      // The clock ticks with game time (17:40 + elapsed), instead of a
+      // hardcoded '17:40' that never moved.
+      this.set('clock', fmtClock(state.time || 0));
       // Dialogue line.
       this.set('dialogue', m.dialogue || '');
       this.toggle('dialogue', !!(m.dialogue && screen === 'play'));
@@ -192,4 +194,13 @@ function fmtTimer(t) {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return m + ':' + String(r).padStart(2, '0');
+}
+
+// Game clock: the world starts at 17:40 (CONFIG.START.TIME_OF_DAY 17.67);
+// one game minute passes per 60 s of play.
+function fmtClock(t) {
+  const mins = 17 * 60 + 40 + Math.floor(t / 60);
+  const h = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  return h + ':' + String(m).padStart(2, '0');
 }

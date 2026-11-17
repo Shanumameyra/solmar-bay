@@ -9,12 +9,17 @@
 const POOL = 240;
 
 const BURST_DEFS = {
-  smoke:   { count: 10, speed: 1.6, up: 1.4, life: 1.1, color: [0.45, 0.45, 0.48], size: 1.0, gravity: -0.4 },
-  exhaust: { count: 4,  speed: 0.7, up: 0.8, life: 0.7, color: [0.25, 0.25, 0.28], size: 0.7, gravity: -0.2 },
+  // Smoke / exhaust are light and warm now: dark grey read as gloom
+  // against the bright golden-hour sky.
+  smoke:   { count: 10, speed: 1.6, up: 1.4, life: 1.1, color: [0.62, 0.6, 0.58], size: 1.0, gravity: -0.4 },
+  exhaust: { count: 4,  speed: 0.7, up: 0.8, life: 0.7, color: [0.42, 0.42, 0.45], size: 0.7, gravity: -0.2 },
   sparks:  { count: 16, speed: 5.0, up: 2.2, life: 0.5, color: [1.0, 0.75, 0.25], size: 0.6, gravity: -6.0 },
   flash:   { count: 8,  speed: 3.0, up: 0.5, life: 0.12, color: [1.0, 0.95, 0.6], size: 0.9, gravity: 0 },
   stars:   { count: 10, speed: 2.4, up: 1.8, life: 0.6, color: [0.6, 0.9, 1.0], size: 0.7, gravity: -2.0 },
   pickup:  { count: 12, speed: 1.8, up: 2.6, life: 0.7, color: [1.0, 0.85, 0.2], size: 0.7, gravity: -1.0 },
+  // Sunlight glints: slow golden sparkles that drift up and hang in the
+  // light (used for pickups / mission moments, never for damage).
+  glint:   { count: 8,  speed: 0.6, up: 1.1, life: 1.4, color: [1.0, 0.9, 0.55], size: 0.8, gravity: -0.1 },
 };
 
 export function createEffects(scene, THREE) {
@@ -140,6 +145,9 @@ export function createEffects(scene, THREE) {
       fx.burst('sparks', x, y, z, { count: 20 });
     } else if (kind === 'pickup') {
       fx.burst('pickup', x, y, z);
+      fx.burst('glint', x, y, z);
+    } else if (kind === 'glint') {
+      fx.burst('glint', x, y, z);
     } else if (kind === 'crash') {
       fx.addTrauma(0.5);
       fx.burst('smoke', x, y, z, { count: 16 });

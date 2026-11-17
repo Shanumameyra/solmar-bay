@@ -65,6 +65,12 @@ export function createInput(canvas) {
   // everything on blur, or the player keeps driving into a wall.
   function onBlur() {
     input.keys.clear();
+    // Also drop any mouse deltas / edges queued before the blur: the
+    // animation frame stops while the tab is hidden, so endFrame() never
+    // runs and a stale dx would whip the camera on return.
+    input.dx = 0;
+    input.dy = 0;
+    input.justPressed.clear();
   }
 
   function attach() {

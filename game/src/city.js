@@ -155,8 +155,8 @@ function makeGroundTexture() {
   const g = c.getContext('2d');
   const S = 1024 / (HALF * 2); // px per metre
   const toPx = (v) => (v + HALF) * S;
-  // Base: asphalt.
-  g.fillStyle = '#33363d';
+  // Base: asphalt (brightened for the golden-hour look, not near-black).
+  g.fillStyle = '#45484f';
   g.fillRect(0, 0, 1024, 1024);
   // Sand strip on the west edge (x < -168).
   g.fillStyle = '#d9b380';
@@ -168,7 +168,7 @@ function makeGroundTexture() {
   g.fillStyle = '#b8a888';
   g.fillRect(toPx(-48), toPx(-48), toPx(48) - toPx(-48), toPx(48) - toPx(-48));
   // Sidewalks: lighter strips along every street.
-  g.fillStyle = '#8d8578';
+  g.fillStyle = '#9a9184';
   for (const s of STREETS) {
     const w = (CONFIG.CITY.STREET / 2 + CONFIG.CITY.SIDEWALK) * S;
     const c0 = s * S;
@@ -176,7 +176,7 @@ function makeGroundTexture() {
     g.fillRect(toPx(s) - w, 0, w * 2, 1024);
   }
   // Re-lay asphalt over the street centres so sidewalks read as edges.
-  g.fillStyle = '#33363d';
+  g.fillStyle = '#45484f';
   for (const s of STREETS) {
     const w = (CONFIG.CITY.STREET / 2) * S;
     g.fillRect(0, toPx(s) - w, 1024, w * 2);
@@ -203,17 +203,20 @@ function makeGroundTexture() {
 }
 
 // Window grid texture for building facades (lit windows glow warm).
+// The base is a LIGHT grey-blue: a dark navy base made every building read
+// as a black slab with glowing windows, which is what made the city look
+// gloomy even under a bright sun. The facade colour now comes through.
 function makeWindowTexture(rows, cols, rng) {
   const c = makeCanvas(128, 256);
   if (!c) return null;
   const g = c.getContext('2d');
-  g.fillStyle = '#2a3a4a';
+  g.fillStyle = '#7a8a9a';
   g.fillRect(0, 0, 128, 256);
   const cw = 128 / cols, rh = 256 / rows;
   for (let r = 0; r < rows; r += 1) {
     for (let col = 0; col < cols; col += 1) {
       const lit = rng.next() < 0.42;
-      g.fillStyle = lit ? (rng.next() < 0.5 ? '#ffd98a' : '#ffeec0') : '#1a2432';
+      g.fillStyle = lit ? (rng.next() < 0.5 ? '#ffd98a' : '#ffeec0') : '#5a6a7a';
       g.fillRect(col * cw + 3, r * rh + 4, cw - 6, rh - 8);
     }
   }
@@ -579,14 +582,19 @@ export function buildCity(seed) {
     // 8 parked (stealable) cars, on streets near the plaza / beachfront.
     // angle uses the shared convention: forward = (sin angle, cos angle).
     parked: [
-      { model: 'sedan', x: -24, z: -2, angle: 0 },
-      { model: 'taxi', x: 30, z: -2, angle: Math.PI },
-      { model: 'van', x: -2, z: 54, angle: Math.PI / 2 },
-      { model: 'sedan', x: 54, z: 30, angle: -Math.PI / 2 },
+      // Parked cars sit ON a street centreline and face ALONG that street,
+      // so stealing one and driving straight ahead never stalls it against
+      // a wall. (The taxi used to face north into a market stall; the van
+      // east into a narrow gap between buildings; the truck sat inside a
+      // port block, off any street.)
+      { model: 'sedan', x: -24, z: 0, angle: -Math.PI / 2 },
+      { model: 'taxi', x: 30, z: 0, angle: Math.PI / 2 },
+      { model: 'van', x: 0, z: 54, angle: 0 },
+      { model: 'sedan', x: 48, z: 30, angle: 0 },
       { model: 'sports', x: -176, z: -72, angle: 0 }, // M2 target (yellow)
-      { model: 'sedan', x: -150, z: 30, angle: Math.PI },
-      { model: 'truck', x: 126, z: -30, angle: 0 },
-      { model: 'sedan', x: 30, z: -54, angle: Math.PI },
+      { model: 'sedan', x: -144, z: 30, angle: Math.PI },
+      { model: 'truck', x: 144, z: -30, angle: 0 },
+      { model: 'sedan', x: 30, z: -48, angle: Math.PI / 2 },
     ],
   };
 

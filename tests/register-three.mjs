@@ -6,4 +6,9 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-register(pathToFileURL(join(here, 'three-hooks.mjs')).href);
+// Idempotent: importing this twice (e.g. via --import and a direct import)
+// must not register the hooks twice.
+if (!globalThis.__solmarBayThreeRegistered) {
+  globalThis.__solmarBayThreeRegistered = true;
+  register(pathToFileURL(join(here, 'three-hooks.mjs')).href);
+}

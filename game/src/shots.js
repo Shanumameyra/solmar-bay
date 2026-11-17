@@ -37,6 +37,33 @@ function fakeInput(keys) {
   };
 }
 
+// Reposition the first `spots.length` ordinary peds (not cops, not the taxi
+// customer) onto small 2-point pace loops at `spots`, so a staged shot has
+// pedestrians visibly in frame. The peds keep pacing their little loop, so
+// they stay in frame for the whole shot instead of wandering off. Spots
+// must sit at least 3 m from any car path (the car-hit radius is 2.5 m),
+// or the ped gets shoved and the shot gains unwanted heat.
+function placePeds(state, spots) {
+  const peds = (state.peds || []).filter((p) => !p.isCop && !p.isTaxiCustomer);
+  let placed = 0;
+  for (let i = 0; i < peds.length && placed < spots.length; i += 1) {
+    const ped = peds[i];
+    const [x, z] = spots[placed];
+    ped.x = x;
+    ped.z = z;
+    ped.loop = [[x - 2, z], [x + 2, z]];
+    ped.loopIdx = 1;
+    ped.path = null;
+    ped.flee = 0;
+    ped.fleeT = 0;
+    ped.fleeFrom = null;
+    ped.state = 'walk';
+    ped.angle = Math.PI / 2;
+    placed += 1;
+  }
+  return placed;
+}
+
 function firstCar(state, kind) {
   const cars = state.cars || [];
   return cars.find((c) => (!kind || c.kind === kind) && !c.isPolice)
@@ -71,10 +98,16 @@ function stageShotInner(name, world, systems, state) {
   const docks = landmarks.docks || { x: 144, z: 48 };
 
   if (name === 'cover') {
-    // Driving down the beachfront street (x=-144), beach on the right.
+    // Driving south down the beach (x=-174, on the sand): the sea fills the
+    // right of the frame, the beachfront buildings + palms the left, the
+    // pier ahead in the distance — city + sea in one frame. The old staging
+    // drove the beachfront avenue, where the sea sat outside the frame.
     // Heading 0 = +z (south) under the (sin, cos) convention.
     const car = firstCar(state, 'sedan') || firstCar(state);
-    if (car) world.teleport(-144, -60, 0, car);
+    if (car) world.teleport(-174, -60, 0, car);
+    // Two pedestrians on the sand, 5 m off the car's path (clear of the
+    // 2.5 m hit radius), pacing where the camera can see them.
+    placePeds(state, [[-179, -30], [-179, -8]]);
     stepWorld(world, systems, fakeInput(['KeyW']), 150);
     return shotInfo(state, name);
   }
@@ -90,6 +123,9 @@ function stageShotInner(name, world, systems, state) {
       car.isParked = true;
       car.speed = 0;
     }
+    // Pedestrians in the plaza, between the player and the café, pacing
+    // small loops so they stay in frame (clear of the fountain collider).
+    placePeds(state, [[-7, -2], [8, -8], [-3, -18]]);
     stepWorld(world, systems, fakeInput([]), 90);
     return shotInfo(state, name);
   }
