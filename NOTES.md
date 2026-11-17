@@ -139,10 +139,12 @@ state = {
   pushed into state.cars (kind 'police', isPolice, driver 'police', lightBar);
   on-foot cops into state.peds (isCop, hp). Police moves its own cars
   kinematically. Uses Math.random (shots.js seeds it for determinism).
-- missions.js: `createMissions()` -> { index, phase, step, timer,
+- missions.js: `createMissions()` -> { index, phase, stepIndex, timer,
   markedCarId, taxi, pickupsSpawned, reset(), loadIndex(i),
   start(i, state), step(dt, state), applyStep, markCar, complete, fail,
   newPickup, taxiStep, objectiveText(state) }. Data from CONFIG.MISSIONS.
+  (The step index is `stepIndex` — NOT `step`, which is the update method;
+  see the name-collision fix in the 18 Nov B fixes section.)
   Writes state.mission {index, phase, step, objective, marker, timer,
   dialogue}, state.pickups, state.taxiMarker. Uses Math.random (seeded by
   shots.js for determinism).
@@ -249,6 +251,75 @@ the same start, or angle 0 (south) from (144,-144). One constant to change.
   (the cover HUD showed "146 m" while the car had already driven 50 m
   toward the café), and the café trigger could never fire from inside a
   car. The camera was unaffected (render.js already follows `p.car`).
+
+### Worker B fixes applied 18 Nov (B's files only) — all verified by QA below
+- **BUG #5 FIXED**: `buildGame()` (main.js) now calls `renderer.buildScene(world.city)`
+  right after `createRenderer`. The city (ground, sea, buildings, lights,
+  signs, pier) now renders in the game and in all 4 staged shots.
+- **Chase staging FIXED** (shots.js): the chase car now drives south down the
+  x=144 downtown street (clear run, buildings lining both sides) instead of
+  diagonally (π/4) from downtown into a tower. Police cars are placed
+  flanking ahead (visible in frame, chasing alongside) instead of at a random
+  angle, and the drive is 90 steps (1.5 s) — mid-chase at 65 km/h, before the
+  roadblock + rams wreck the car (the 3 s version ended at 0 km/h, 0 HP).
+- **police.js spawnCar/spawnCop shape FIXED**: both now build full contract
+  shapes. `spawnCar` uses `vehicle.js createCar('police', …)` (len/wid/hgt/
+  topSpeed/steer/…); the old hand-built object had no len/wid, so
+  `collideCars` computed minD = NaN and poisoned ANY car it touched with a
+  NaN position (the player's car went NaN on the first driving step and its
+  HP drained to 0). `spawnCop` now has the full ped shape (loop, loopIdx,
+  path, pathIdx, flee, fleeT, fleeFrom, bobPhase, isTaxiCustomer); the old
+  cop had `loop: null`, and `stepPed` resets state to 'walk' every step and
+  reads `ped.loop[ped.loopIdx]` — it crashed the world.
+- **missions.js markCar + taxi customer shape FIXED** (same two bugs):
+  `markCar` now uses `createCar('sports', …)`; the taxi customer ped now has
+  the full ped shape with a 2-point curb loop.
+- **missions.js `step` name collision FIXED** (critical): the missions object
+  had BOTH a data property `step: 0` (the step index) and a method
+  `step(dt, state)`. `start()` did `this.step = 0`, which OVERWROTE the
+  method with the number 0 — after that `world.step`'s
+  `typeof systems.missions.step === 'function'` check failed and missions
+  never stepped again (timer froze at 150.00, M1 never advanced). The index
+  is now `stepIndex` everywhere in missions.js (property + all reads/writes);
+  `state.mission.step` (the shared state object) is unchanged.
+- **combat.js death check ADDED**: `combat.step` now calls `die(state)` when
+  `player.hp <= 0` (and screen is not already 'wasted'), so ANY path that
+  zeroes HP (world.damagePlayer, cop attacks) triggers WASTED + hospital
+  respawn + $100 fine. Before, `world.damagePlayer` pushed a 'playerDown'
+  event that nothing consumed — the player sat at 0 HP on the title screen.
+- **audio.js throttle FIXED**: engine throttle now reads `input.keys`
+  (KeyW/ArrowUp); the old code read `input.moveZ`, which the input object
+  does not have (moveZ only exists on the translated drive object).
+- **index.html weapon row**: restored the `ammo-res` span (hud.js writes it).
+
+### Worker B QA results (18 Nov, after all fixes above)
+- **Headless selftest** `node --import ./tests/register-three.mjs tests/selftest.mjs`:
+  **71/71 PASS** (RNG, A*, mission data, walk/enter/drive, police heat/spawn/
+  bust/cooldown, M1 flow + timer fail, combat punch/shoot/medkit/shop/death,
+  save round-trip, audio/effects/HUD/minimap headless, staged shots +
+  determinism, dossier caps, main.ts build).
+- **Screenshots** `tests/shots.py`: **PASS, 0 errors**. 1-cover 75,771 B,
+  2-onfoot 87,064 B, 3-chase 70,954 B, 4-mission 68,949 B (all ≤ 256 KiB).
+  Visually checked: cover = car at 108 km/h down a lit-window city street;
+  onfoot = Dario in the market plaza (fountain, stalls, palms); chase = 3
+  stars, 2 SBPD cruisers visible, 65 km/h, "WANTED ★★★" + "Roadblock ahead";
+  mission = Dario at the docks, "Drive to the docks 15 m 2:29", container +
+  beacon. Cover/onfoot/mission are byte-identical across runs (deterministic).
+- **Browser playtest** `tests/playtest.py`: **PASS, 0 errors**. Title →
+  Enter → play; walk 3.9 m; E enters a car; drive 18.0 m/s, 13.6 m; wanted 2
+  (1 police car); mission starts ("Drive to the docks"); HUD cash/objective/
+  stars + minimap all present. FPS 4 in headless SwiftShader (software
+  rendering — slow here, fast on real hardware); the playtest waits on
+  conditions, not wall time, because of it.
+- **main.ts determinism**: two runs into fresh dirs → `diff -r` identical
+  bytes. Output 3.1 MB (dossier.json 572 KB, game/, 4 screenshots).
+- **Known issue (A's city.js, not B's to fix)**: some parked cars face into
+  buildings — e.g. the taxi at (30,-2) faces north (π) into a block, and the
+  van at (-2,54) faces east into a narrow gap between buildings. Stealing one
+  and driving straight ahead stalls it against a wall within ~9 m (the
+  player can steer out). The parked spots should be oriented along the
+  street they sit on. The selftest + playtest drive on a clear street
+  (beachfront x=-144) instead, so this does not block QA.
 
 ### Playwright smoke test (18 Nov, after the fixes above)
 - node harness: **38/38 PASS** (recreated in /tmp after the restart; the
