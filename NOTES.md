@@ -1,0 +1,265 @@
+# Solmar Bay — build notes (Worker A + Worker B)
+
+## Status
+- 22:00 WIB 17 Nov: repo created (Shanumameyra/solmar-bay), starter commit 5137c64,
+  record running (pid 8817). GitHub About set (homepage + makefun topic).
+- Worker B (systems/UI/QA): building now. Worker A (world/driving): in parallel.
+- **Contract (confirmed 17 Nov ~23:30 WIB, read from A's files):** this file
+  describes the REAL, implemented contract. A aligned their modules to it.
+  Do not use any other field names.
+
+## Shared state shape (world.state) — law for both workers
+```
+state = {
+  seed, time,                      // seconds since world start
+  money: 150,                      // CONFIG.START.MONEY
+  health: 100,                     // mirror of player.hp (world.damagePlayer syncs both)
+  wanted: 0,                       // 0..5; police OWNS it (world.addHeat delegates
+                                   // to police.addHeat when police exists)
+  player: { x, z, heading, yaw, pitch, speed, hp, maxHp, onFoot, inCar,
+            car, carId, weapon:'fists'|'pistol', ammo, reserveAmmo,
+            invuln, moving, enterT },
+  cars:   [ { id, kind:'sedan'|'sports'|'taxi'|'truck'|'van'|'police', model,
+              name, x, z, angle, speed, steer, hp, maxHp, topSpeed, color,
+              len, wid, hgt, isParked, isTraffic, isPolice, lightBar,
+              driver:'player'|'traffic'|'police'|null, route, routeIdx,
+              stopped, drift, smoke, stalled, damageFlash } ],
+  peds:   [ { id, x, z, angle, speed, hp, isCop, isTaxiCustomer, state:'walk'|'flee'|'idle',
+              color, loop, loopIdx, path, pathIdx, flee, fleeT, fleeFrom, bobPhase } ],
+  police: [],                      // kept for the contract; B's police units live in cars/peds
+  mission: { index, phase:'idle'|'active'|'done'|'failed', step, objective,
+             marker:{x,z}|null, timer, dialogue },   // dialogue = Rosa's line
+  stats: { missionsDone, carsStolen, busted, deaths, bestCash, distanceDriven,
+           pedsHit, shotsFired, shotsHit },
+  feed: [ {text, at} ],            // persistent message feed (world.pushFeed), max 6
+  events: [],                      // transient {type, text, t} — NOT cleared per step;
+                                   // main.js + hud.js drain it once per frame
+  screen: 'title'|'play'|'paused'|'busted'|'wasted',
+  screenT: 0,                      // countdown while screen is busted/wasted
+  systems: null,                   // set by world.step EACH step (the systems object)
+  pickups: [ {x,z,amount,taken,respawnT} ],  // cash bundles (missions.js)
+  taxiMarker: {x,z}|null,          // current taxi customer / destination (missions.js)
+  policeNear: false,               // any police unit within 60 m (police.js, siren/HUD)
+  shakeTrauma: 0,                  // trauma add from systems (main.js drains into effects)
+  fxBurst: null,                   // {type,x,y,z} burst request (main.js drains into effects)
+  landmarks: city.landmarks,       // { cafe, docks, garage, safehouse, hospital,
+                                   //   precinct, gunshop, beachCar, beach, downtown,
+                                   //   plaza, pier, market } each {x,z}
+  spawnPoints: city.spawnPoints,   // { player, parked[8] }
+  colliders: city.colliders,       // building AABBs {minX,maxX,minZ,maxZ}
+  navGrid: city.navGrid,           // A* (findPath)
+  paused, over,
+}
+
+// Heading convention (shared): a heading/angle `a` means forward =
+// (sin(a), 0, cos(a)) in world space; angle 0 = +z (south), PI = -z (north).
+// Mesh rotation.y = -angle. Mouse right turns right (yaw decreases).
+// world.step MUST set state.systems = systems before calling the systems,
+// so missions can addHeat via state.systems.police.
+// render.js draws: state.cars (kind police = SBPD, lightBar = flashing bar),
+// state.peds (isCop = blue cop, isTaxiCustomer = green), state.pickups
+// (gold glowing bundles), state.mission.marker || state.taxiMarker
+// (yellow pulsing beacon column).
+```
+
+## Exports main.js expects from Worker A (as implemented)
+- random.js: `createRandom(seed)` -> { next(), range(lo,hi), int(n), intRange(lo,hi),
+  pick(arr), chance(p), shuffle(arr), gauss() } (mulberry32). `hashSeed(str)`.
+- config.js: `CONFIG` (STEP 1/60, MAX_FRAME 0.25, CITY {HALF 200, STREETS
+  [-192..192 step 48], CENTRES}, DISTRICTS, PLAYER {WALK 5, RUN 8, HEALTH 100,
+  PUNCH_RANGE 2.0, PUNCH_DAMAGE 15, PUNCH_COOLDOWN 0.4, ENTER_RANGE 3.2},
+  CAR {ACCEL 12, TOP 38, SPORTS_TOP 46, HP 100}, CAR_MODELS, TRAFFIC {COUNT 10,
+  CRUISE 9}, PEDS {COUNT 18, WALK 1.4, FLEE 3.4, FLEE_RADIUS 18},
+  WANTED {MAX_STARS 5, HEAT {STEAL_WITNESSED 1, STEAL_POLICE 2, HIT_PED 1,
+  SHOT_NEAR_POLICE 1, KILL_COP 2}, TIERS [{cars,foot,speedMul} per star:
+  0:0/0, 1:1/0, 2:2/0, 3:3/2, 4:4/4, 5:5/6], DECAY_SIGHT_LOST 15,
+  DECAY_PER_STAR 10, BUST_FINE 200, BUST_FOOT_RANGE 3, BUST_FOOT_TIME 2,
+  BUST_CAR_RANGE 4, BUST_CAR_TIME 3, BUST_CAR_SPEED 2},
+  MISSIONS [M0 'The Call' 0, M1 'The Pickup' 300/150s, M2 'Hot Wheels' 500,
+  M3 'The Getaway' 800/150s — each {id,name,reward,time,intro,steps[]}],
+  TAXI_FARE 45, CASH_PICKUP 25, COMBAT {PISTOL_MAG 12, PISTOL_DAMAGE 25,
+  PISTOL_RANGE 40, PISTOL_FALLOFF 30, RELOAD_TIME 1.2, AMMO_PRICE 50,
+  AMMO_PER_BUY 12, POLICE_HP 100, MEDKIT_HEAL 50, DEATH_FINE 100},
+  START {MONEY 150, TIME_OF_DAY 17.67, PLAYER_SPAWN {x:8,z:30,angle:PI}},
+  PLACES, RENDER {CAMERA_FOV 62, MAX_DRAW_CALLS 60}, PALETTE)
+  and `LANDMARKS` {cafe {0,-36}, docks {144,48}, garage {-24,144},
+  safehouse {-120,144}, hospital {144,-72}, precinct {72,144},
+  gunshop {-72,96}, beachCar {-176,-72}, beach {-165,0},
+  downtown {120,-144}, plaza {0,12}, pier {-210,48}, market {0,24}}.
+- city.js: `buildCity(seed)` -> { group, streets, centres, blocks, landmarks,
+  spawnPoints {player, parked[8]}, colliders [{minX,maxX,minZ,maxZ}], navGrid,
+  lights, signMeshes, districtAt(x,z), isOnRoad(x,z) }.
+  `NavGrid` with findPath(sx,sz,tx,tz) -> [[x,z],...] | null.
+  `collideCircle(city,x,z,r)`, `hitsCollider(city,x,z,r)`.
+- world.js: `createWorld(seed=7)` -> { state, city, rng, reset, step,
+  addHeat(n,reason), addMoney(n,reason), damagePlayer(n), healPlayer(n),
+  pushFeed(text), nearestCar(x,z,maxDist,opts), nearestPed(x,z,maxDist),
+  carsNear(x,z,radius), teleport(x,z,angle,car) }.
+  `step(dt, input, systems)`: state.systems = systems; state.time += dt;
+  translateInput(input) -> {moveX,moveZ,run,lookDX,lookDY,enter,honk};
+  stepPlayer; stepCar (player car, mirrors player.speed); stepTraffic;
+  systems.police.step(dt,state), systems.missions.step(dt,state),
+  systems.combat.step(dt,state,input) [RAW input]; state.health = player.hp.
+  Returns state.events. `reset()` restores the initial state (screen 'play').
+  addHeat delegates to police.addHeat when police exists, else bumps
+  state.wanted directly. damagePlayer respects invuln, syncs player.hp +
+  state.health, pushes {type:'damage'} and {type:'playerDown'} at 0.
+  teleport(x,z,angle,car): on foot = collide-resolved move; with a car =
+  places the player IN that car (enterCar). stealCar (vehicle.js) already
+  adds heat when witnessed (police 60 m -> +2, ped 25 m -> +1).
+  stepTraffic already adds heat when the player car hits a ped at speed > 3.
+- player.js: `createPlayer(spawn)`, `stepPlayer(state, drive, dt, world, systems)`.
+  drive = {moveX,moveZ,run,lookDX,lookDY,enter,honk}. WASD relative to yaw,
+  Shift runs, mouse look (yaw -= dx*0.0026), E enter/exit (stealCar if
+  isParked), H honk (peds flee). Combat is combat.js (raw justPressed).
+- vehicle.js: `createCar(model,x,z,angle,opts)`, `stepCar`, `collideCars`,
+  `damageCar` (pushes {type:'carDamage'} when driver is player), `enterCar`
+  (sets player.car/carId/inCar, onFoot=false), `exitCar`, `stealCar` (heat
+  when witnessed, see above).
+- traffic.js: `createTraffic(city,rng)` -> {cars[10], peds[18]}, `stepTraffic`,
+  `nsGreen(time,sx,sz)`. Peds have hp/state/flee/fleeT/path (A* flee).
+- input.js: `createInput(canvas)` -> the input object itself:
+  { keys:Set, dx, dy, justPressed:Set, pointerLocked, attach(), detach(),
+  endFrame() }. keys holds KeyboardEvent.code. dx/dy are accumulated mouse
+  movement since last endFrame(). justPressed holds codes pressed this frame
+  (edge) + 'Mouse0' on left click (after pointer lock). Listeners attach
+  IMMEDIATELY on creation. endFrame() clears dx/dy/justPressed.
+- render.js: `createRenderer(canvas)` -> { draw, resize, buildScene,
+  snapCamera, getStats, scene, camera, renderer }.
+  `draw(state, fx)`: fx is the effects object (fovKick applied here);
+  camera shake is applied by effects.applyCamera AFTER draw (not here).
+  Camera: on foot follows p.yaw, in car follows p.car.angle.
+
+## Systems interface (Worker B) — what world.step calls
+- police.js: `createPolice()` -> { wanted, heat, lastSeenAt, nextDecayAt,
+  bustT, roadblockT, spawnT, reset(), addHeat(n, reason, state),
+  desiredUnits(), step(dt, state), pursueCar, pursueCop, spawnCar, spawnCop,
+  bust(state) }. Police OWNS the wanted level (mirrors this.wanted onto
+  state.wanted every step; world.addHeat routes through it). Police cars are
+  pushed into state.cars (kind 'police', isPolice, driver 'police', lightBar);
+  on-foot cops into state.peds (isCop, hp). Police moves its own cars
+  kinematically. Uses Math.random (shots.js seeds it for determinism).
+- missions.js: `createMissions()` -> { index, phase, step, timer,
+  markedCarId, taxi, pickupsSpawned, reset(), loadIndex(i),
+  start(i, state), step(dt, state), applyStep, markCar, complete, fail,
+  newPickup, taxiStep, objectiveText(state) }. Data from CONFIG.MISSIONS.
+  Writes state.mission {index, phase, step, objective, marker, timer,
+  dialogue}, state.pickups, state.taxiMarker. Uses Math.random (seeded by
+  shots.js for determinism).
+- combat.js: `createCombat()` -> { weapon, ammo, reserveAmmo, punchCd,
+  reloadT, copHitT, healCd, shopCd, muzzleT, reset(),
+  step(dt, state, input), punch(state), shoot(state), reload(state),
+  damagePed, copAttack, damagePlayer, die, medkitCheck, ammoShopCheck,
+  nearestInCone }. Reads input.justPressed (KeyF/KeyR/Mouse0/Digit1/Digit2).
+  Owns weapon/ammo/reserveAmmo and mirrors them onto the player each step.
+  Reload is NOT free here — it draws from reserveAmmo (bought at the gun shop).
+- effects.js: `createEffects(scene, THREE)` -> { trauma, decay, maxOffset,
+  maxRoll, strength, fovKick, update(dt), burst(type,x,y,z,opts),
+  addTrauma(n), feedback(kind,x,y,z), applyCamera(camera,dt),
+  getCameraOffset() }. Particles + shake + FOV kick only (the renderer draws
+  the beacon/pickups). Inert when scene/THREE are null (node tests).
+- audio.js: `createAudio()` -> { init(), sfx(name), setMuted(b), muted,
+  update(dt,state,running,input), engine(speed01,throttle,onFoot), siren,
+  stopAll(), stopMusic() }. No-op without AudioContext.
+- save.js: `loadSave(storage?)` -> {ok, data} | {ok:false, empty} |
+  {ok:false, newer}, `saveGame(state, storage?)`, `captureSave(state)`,
+  `applySave(state, data)`, `hasSave`, `clearSave`.
+  Save shape: {version:1, money, missionIndex, missionsDone, carsStolen,
+  busted, deaths, bestCash, muted, seed, savedAt}.
+- hud.js: `createHud(document)` -> { update(state,screen,dt),
+  showMessage(text,kind) }. Drains state.events for the feed (shifts them
+  out); main.js plays sfx from the same queue BEFORE hud.update.
+  Reads state.money/wanted/health, player.hp/weapon/ammo/reserveAmmo,
+  state.mission.{objective,marker,timer,dialogue}, state.policeNear.
+  Change-detected DOM writes. Damage flash from hp drops.
+- minimap.js: `createMinimap(canvas)` -> { draw(state) }. North-up, streets
+  from CONFIG.CITY.STREETS (48 m grid), sea x<-200, sand -200..-168,
+  colliders {minX,maxX,minZ,maxZ}, player arrow rotated by (PI - yaw)
+  [forward=(sin,cos)]. Mission marker = state.mission.marker (yellow,
+  pulsing); taxi = state.taxiMarker (green); pickups gold; police blue/red.
+- shots.js: `stageShot(name, world, systems)`; names cover|onfoot|chase|mission
+  (SHOT_NAMES, SHOT_FILES). Uses world.teleport / world.addHeat /
+  systems.missions.start / systems.police.spawnCar + a scripted input
+  {keys,dx,dy,justPressed,pointerLocked}. Deterministic per seed: Math.random
+  is temporarily replaced by a seeded mulberry32 stream while staging.
+  Also exports `mulberry32(seed)`.
+- main.js: boot + fixed-step loop. Input object from createInput (listeners
+  already attached); endFrame() after each fixed step. Title steps the world
+  with an idle input. Events: world.step's return is drained per frame
+  (sfx -> audio, fx -> effects via state.fxBurst, mission-complete -> save).
+  state.screen busted/wasted -> main screen + 2.5 s timer. ?shot=name stages,
+  draws twice (renderer.draw + effects.applyCamera), sets window.__shotReady
+  + window.__GTA. window.__GTA.debug = { teleport, addHeat, startMission,
+  damagePlayer } (playtest hook). Save: load at boot (applySave +
+  missions.loadIndex), autosave 30 s, save on pause/bust/wasted/
+  mission-complete. Audio init on first gesture; visibilitychange pauses.
+
+## Worker B file list (do NOT touch Worker A files)
+B owns: police.js, missions.js, combat.js, hud.js, minimap.js, audio.js, save.js,
+effects.js, shots.js, main.js, index.html, main.ts, serve.ts, tests/, screenshots/,
+README.md. A owns: config.js, random.js, city.js, world.js, player.js, vehicle.js,
+traffic.js, render.js, input.js. game/vendor/three/*.min.js = vendored library.
+
+## Worker A verification (18 Nov, after the ~23:xx WIB VM restart)
+
+### B bugs flagged earlier — ALL FOUR NOW VERIFIED FIXED (do not re-open)
+Re-checked against the current files after the restart; B fixed all of them:
+1. combat.js `pushEvent` — now defined at combat.js:304.
+2. effects.js `applyCamera` — now defined at effects.js:153.
+3. missions.js M2/M3 never start — the café trigger is no longer gated on
+   `index === 0` (missions.js:159-161 uses `this.index === 0 ? 1 : this.index`).
+4. minimap.js pier position — now drawn at z=48 (minimap.js:55-56).
+
+### ⚠️ B BUG #5 (CRITICAL, open) — the whole city never renders
+`render.js` exports `buildScene(builtCity)` (render.js:155, 355) but NOTHING
+calls it — grep finds no `buildScene` call in main.js or shots.js. Result
+(verified in Playwright screenshots 18 Nov): the player, cars, peds, beacon
+and HUD all render, but the ground, streets, buildings, palms, port, pier
+and streetlights are INVISIBLE — cars float in a gradient void. The
+interactive game and all 4 staged shots are affected, because both
+`runShot` and `runGame` go through `buildGame()`.
+FIX (one line, B's file — A must not edit it): in `buildGame()` (main.js:57),
+right after `const renderer = createRenderer(canvas);`, add:
+`renderer.buildScene(world.city);`
+That single call fixes both the game and the shots.
+
+### Chase-shot staging suggestion (B's shots.js, not a bug — a better frame)
+The chase car starts at downtown (120,-144) with angle π/4, i.e. diagonally
+across blocks, so it wedges into a downtown tower within ~10 m and sits at
+~1 km/h, hp 84, for the whole shot. It still reads as a chase (yellow sports
+car + 3 cruisers + "WANTED ★★★" + "Roadblock ahead"), but it would read
+better if the car drove along a street: angle π/2 (east along z=-144) from
+the same start, or angle 0 (south) from (144,-144). One constant to change.
+
+### Worker A fixes applied 18 Nov (A's files only)
+- city.js: beachfront building row moved x=-150 → x=-162. The row (14 m
+  wide) used to sit ON the beachfront avenue (street x=-144, 12 m wide), so
+  the cover-shot car drove into it and stalled at ~0.2 m/s. The avenue is
+  now clear; the cover car reaches 30 m/s (108 km/h) down the avenue.
+- config.js + city.js: beach landmark (-165,0) → (-156,0), so the cover
+  car's staging point (beach.x+8) lands on the avenue instead of inside
+  the building row's x-range.
+- render.js: `THREE.PCFSoftShadowMap` → `THREE.PCFShadowMap` (the vendored
+  three.js removed PCFSoft; it only logged a console warning, but it is
+  gone now).
+- player.js: while driving (`!p.onFoot`), `p.x/p.z` now sync to the car
+  every step (and `p.heading` to the car's angle). Before this, player.x/z
+  froze at the entry point while the car drove away, so the minimap arrow,
+  the HUD objective distance and the mission marker distances all froze
+  (the cover HUD showed "146 m" while the car had already driven 50 m
+  toward the café), and the café trigger could never fire from inside a
+  car. The camera was unaffected (render.js already follows `p.car`).
+
+### Playwright smoke test (18 Nov, after the fixes above)
+- node harness: **38/38 PASS** (recreated in /tmp after the restart; the
+  repo files survived intact).
+- Shots cover/onfoot/chase: all `__shotReady`, 0 console/page errors.
+  Cover: inCar, 108 km/h. Chase: wanted 3, 3 police cruisers, feed shows
+  "WANTED ★★★" + "Roadblock ahead". Onfoot: player + cars + peds render.
+- Interactive: Enter → 'play', W 3 s → 9.8 m at 5 m/s, hp 100, fps 4
+  (SwiftShader software rendering — slow here, fast on real hardware).
+- Known measurement artifact: reading the WebGL canvas via drawImage
+  returns 1 colour (preserveDrawingBuffer=false); use page.screenshot
+  (composited) instead — that is how the renders above were verified.
+- First chase screenshot in one run showed no car (compositor race in
+  slow SwiftShader); a re-run showed the car clearly. Not a code bug.
