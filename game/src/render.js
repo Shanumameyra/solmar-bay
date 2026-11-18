@@ -85,10 +85,10 @@ function makeCloudTexture() {
   return tex;
 }
 
-// The visible sun: a pale white-yellow glare at the END of the road
-// (dead centre, south, very low, almost touching the horizon) — NOT a
-// big round disc. The #1 entry's sun is a bright bloom that whitens the
-// road and sky in the middle of the frame.
+// The visible sun: a pale white-yellow disc at the END of the road
+// (dead centre, south, VERY low — y=18, almost touching the horizon) —
+// the Top 5 sun is a distinct low disc at the horizon, not a big white
+// blob high in the sky. Bigger (130) so it reads as a sun, not a speck.
 function makeSunSprite() {
   const tex = makeGlowTexture();
   if (!tex) return null;
@@ -97,8 +97,8 @@ function makeSunSprite() {
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.position.set(-190, 30, 700);
-  sprite.scale.set(110, 110, 1);
+  sprite.position.set(-190, 18, 700);
+  sprite.scale.set(130, 130, 1);
   sprite.name = 'sun-disc';
   return sprite;
 }
@@ -115,8 +115,8 @@ function makeGlareSprite() {
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.position.set(-190, 55, 700);
-  sprite.scale.set(520, 240, 1);
+  sprite.position.set(-190, 38, 700);
+  sprite.scale.set(520, 200, 1);
   sprite.name = 'sun-glare';
   return sprite;
 }
@@ -132,9 +132,26 @@ function makeHaloSprite() {
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.position.set(-190, 70, 700);
-  sprite.scale.set(900, 350, 1);
+  sprite.position.set(-190, 60, 700);
+  sprite.scale.set(900, 300, 1);
   sprite.name = 'sun-halo';
+  return sprite;
+}
+
+// Horizon band: a very wide, thin warm glow lying along the horizon at
+// the end of the road — the low sun's light spreading sideways, so the
+// sunset reads as a band of fire at the horizon, not a round blob.
+function makeHorizonSprite() {
+  const tex = makeGlowTexture();
+  if (!tex) return null;
+  const mat = new THREE.SpriteMaterial({
+    map: tex, color: 0xff9a50, transparent: true, opacity: 0.3,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.position.set(-190, 22, 700);
+  sprite.scale.set(1400, 90, 1);
+  sprite.name = 'sun-horizon';
   return sprite;
 }
 
@@ -250,9 +267,10 @@ export function createRenderer(canvas) {
   // Warm fill from the north-west (no shadow): lifts the camera-facing
   // facades + the GT's rear, which the low southern sun leaves in shade,
   // so the pastel buildings read bright like the reference instead of dark.
-  // 0.7 (was 0.8): a dimmer fill deepens the shadows for a more cinematic
-  // contrast — the lighter window texture now carries the facades.
-  const fill = new THREE.DirectionalLight(0xffc0a8, 0.7);
+  // 0.85 (was 0.7): a brighter fill lifts the shadowed west side of the
+  // road + the facades, so the boulevard never reads dark/plain — the
+  // Top 5 forbids a too-dark road.
+  const fill = new THREE.DirectionalLight(0xffc0a8, 0.85);
   fill.position.set(-150, 150, -200);
   scene.add(fill);
   sun.shadow.mapSize.set(CONFIG.RENDER.SHADOW_MAP, CONFIG.RENDER.SHADOW_MAP);
@@ -274,6 +292,8 @@ export function createRenderer(canvas) {
   if (glareSprite) scene.add(glareSprite);
   const haloSprite = makeHaloSprite();
   if (haloSprite) scene.add(haloSprite);
+  const horizonSprite = makeHorizonSprite();
+  if (horizonSprite) scene.add(horizonSprite);
   for (const cloud of makeClouds()) scene.add(cloud);
 
   // ---- Reused scratch objects (no per-frame allocation) ----
@@ -320,7 +340,7 @@ export function createRenderer(canvas) {
   const poolTex = makeGlowTexture();
   const carPools = new THREE.InstancedMesh(poolGeo,
     new THREE.MeshBasicMaterial({ map: poolTex, transparent: true,
-      blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.5 }), MAX_CARS);
+      blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.75 }), MAX_CARS);
   carPools.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   carBody.castShadow = true;
   carCabin.castShadow = true;
@@ -677,12 +697,12 @@ export function createRenderer(canvas) {
   heliRotor.scale.set(11, 0.12, 0.5);
   heliRotor.position.y = 1.0;
   const heliBeam = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.0, 6.5, 18, 16, 1, true),
+    new THREE.CylinderGeometry(0.8, 4.5, 18, 16, 1, true),
     new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }),
   );
   heliBeam.position.y = -9;
   const heliPool = new THREE.Mesh(
-    new THREE.CircleGeometry(6.5, 24),
+    new THREE.CircleGeometry(4.5, 24),
     new THREE.MeshBasicMaterial({ map: makeGlowTexture(), color: 0xfff2cc, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }),
   );
   heliPool.rotation.x = -Math.PI / 2;
@@ -781,20 +801,26 @@ export function createRenderer(canvas) {
         setInstance(carTail, tailIdx, car.x - fwdX + rx * car.wid * 0.32 * side, ly, car.z - fwdZ + rz * car.wid * 0.32 * side, yaw, 0.35, 0.16, 0.1);
         tailIdx += 1;
       }
-      // Police light bar: two flashing boxes on the roof.
+      // Police light bar: two flashing boxes on the roof — BIG (0.75 m
+      // wide) so the red/blue reads at hero distance, not two tiny dots.
+      // In hero mode BOTH halves are lit at once (red left, blue right)
+      // so a single screenshot shows red AND blue; in normal play the
+      // halves alternate (the flash lives on in the road pools too).
       if (car.isPolice) {
+        const bothLit = !!state.heroCam;
         const bx = car.x - Math.sin(car.angle) * car.len * 0.05;
         const bz = car.z - Math.cos(car.angle) * car.len * 0.05;
-        setInstance(carBars, barIdx, bx - rx * 0.35, 1.42, bz - rz * 0.35, yaw, 0.5, 0.22, 0.3);
-        carBars.setColorAt(barIdx, tmpColor.setHex(flash ? 0xff2d4a : 0x222244));
+        setInstance(carBars, barIdx, bx - rx * 0.35, 1.42, bz - rz * 0.35, yaw, 0.75, 0.3, 0.4);
+        carBars.setColorAt(barIdx, tmpColor.setHex(bothLit ? 0xff2d4a : (flash ? 0xff2d4a : 0x222244)));
         barIdx += 1;
-        setInstance(carBars, barIdx, bx + rx * 0.35, 1.42, bz + rz * 0.35, yaw, 0.5, 0.22, 0.3);
-        carBars.setColorAt(barIdx, tmpColor.setHex(flash ? 0x222244 : 0x2d7dff));
+        setInstance(carBars, barIdx, bx + rx * 0.35, 1.42, bz + rz * 0.35, yaw, 0.75, 0.3, 0.4);
+        carBars.setColorAt(barIdx, tmpColor.setHex(bothLit ? 0x3d8fff : (flash ? 0x222244 : 0x3d8fff)));
         barIdx += 1;
         // Wet-road reflection: a soft red/blue pool under the cruiser,
-        // flashing with the bars.
-        setInstance(carPools, poolIdx, car.x, 0.03, car.z, yaw, 1.9, 1, 1.9);
-        carPools.setColorAt(poolIdx, tmpColor.setHex(flash ? 0xff2d4a : 0x2d7dff));
+        // flashing with the bars — bigger + stronger (r=2.4, opacity
+        // 0.75) so the red/blue on the wet asphalt is unmistakable.
+        setInstance(carPools, poolIdx, car.x, 0.03, car.z, yaw, 2.4, 1, 2.4);
+        carPools.setColorAt(poolIdx, tmpColor.setHex(flash ? 0xff2d4a : 0x3d8fff));
         poolIdx += 1;
       }
       ci += 1;
@@ -937,11 +963,12 @@ export function createRenderer(canvas) {
     fwd.set(Math.sin(tyaw), 0, Math.cos(tyaw));
     if (inCar && state.heroCam) {
       // Hero shot: LOW + CLOSE rear 3/4 chase cam (the #1 entry's angle)
-      // — back 6.5 m, out 3.5 m to the right, 2.6 m up, looking 6 m ahead
-      // of the car — so the GT fills the centre-bottom of the frame, the
+      // — back 5.8 m, out 3.2 m to the right, 2.4 m up, looking 6 m ahead
+      // of the car — so the GT fills the centre-bottom of the frame
+      // (~31% of the frame width, inside the Top 5's 25-40%), the
       // asphalt fills the bottom third, and the horizon sits mid-frame.
       const rx = -fwd.z, rz = fwd.x; // right = (-cos, sin)
-      desiredPos.set(tx - fwd.x * 6.5 + rx * 3.5, 2.6, tz - fwd.z * 6.5 + rz * 3.5);
+      desiredPos.set(tx - fwd.x * 5.8 + rx * 3.2, 2.4, tz - fwd.z * 5.8 + rz * 3.2);
       desiredTarget.set(tx + fwd.x * 6, 2.0, tz + fwd.z * 6);
     } else if (inCar) {
       desiredPos.set(tx - fwd.x * 9.5, 4.4, tz - fwd.z * 9.5);

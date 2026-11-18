@@ -126,7 +126,7 @@ function stageShotInner(name, world, systems, state) {
       objective: 'Lose the cops — reach the safehouse',
       stageLabel: 'STAGE 3/4',
       stagePct: 75,
-      next: 'Reach the safehouse',
+      next: 'Bring the money home',
       speedKmh: 151,
       carName: 'VESPERA GT',
       condPct: '100%',
@@ -227,7 +227,7 @@ function stageShotInner(name, world, systems, state) {
     // south, so the trail sits north). Drained by main.js on the next
     // frame, mid-life (~0.4 s of 1.1 s) at screenshot time — reads as
     // speed, not a static pose.
-    state.fxBurst = { type: 'smoke', x: player.x, y: 0.6, z: player.z - 2.5, count: 24, spread: 1.6 };
+    state.fxBurst = { type: 'smoke', x: player.x, y: 0.6, z: player.z - 2.5, count: 32, spread: 2.0 };
     // No feed messages in the shot: staging pushes wanted/roadblock
     // events, and the HUD would print them top-centre over the scene.
     state.events = [];

@@ -355,9 +355,9 @@ function makeSeaTexture() {
   if (!c) return null;
   const g = c.getContext('2d');
   const grad = g.createLinearGradient(0, 0, SIZE, 0);
-  grad.addColorStop(0, '#0f6a8a');
-  grad.addColorStop(0.5, '#1a8aa8');
-  grad.addColorStop(1, '#2aa8b8');
+  grad.addColorStop(0, '#0a5a7a');
+  grad.addColorStop(0.5, '#127a9c');
+  grad.addColorStop(1, '#1f96b0');
   g.fillStyle = grad;
   g.fillRect(0, 0, SIZE, SIZE);
   const srng = createRandom(777);
@@ -373,8 +373,8 @@ function makeSeaTexture() {
     g.stroke();
   }
   const glint = g.createLinearGradient(0, 0, SIZE, 0);
-  glint.addColorStop(0, 'rgba(255,170,90,0.18)');
-  glint.addColorStop(0.4, 'rgba(255,170,90,0.05)');
+  glint.addColorStop(0, 'rgba(255,170,90,0.10)');
+  glint.addColorStop(0.4, 'rgba(255,170,90,0.03)');
   glint.addColorStop(1, 'rgba(255,170,90,0)');
   g.fillStyle = glint;
   g.fillRect(0, 0, SIZE, SIZE);
@@ -452,13 +452,14 @@ export function buildCity(seed) {
   // Wet-look sea: low roughness so the sun glints across the water, but
   // low metalness / envMapIntensity so the blue base stays blue instead
   // of mirroring the orange sunset env map (at 0.9 it read as orange
-  // sand, not water).
+  // sand, not water). envMapIntensity 0.1 (was 0.2): the sea must read
+  // as turquoise water at sunset, not a washed-out white band.
   const seaTex = makeSeaTexture();
   const sea = new THREE.Mesh(
     new THREE.PlaneGeometry(120, HALF * 2 + 40),
     seaTex
-      ? new THREE.MeshStandardMaterial({ map: seaTex, roughness: 0.5, metalness: 0.1, envMapIntensity: 0.2, fog: false })
-      : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.SEA, roughness: 0.5, metalness: 0.1, envMapIntensity: 0.2, fog: false }),
+      ? new THREE.MeshStandardMaterial({ map: seaTex, roughness: 0.5, metalness: 0.1, envMapIntensity: 0.1, fog: false })
+      : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.SEA, roughness: 0.5, metalness: 0.1, envMapIntensity: 0.1, fog: false }),
   );
   sea.rotation.x = -Math.PI / 2;
   sea.position.set(-HALF - 60, -0.15, 0);

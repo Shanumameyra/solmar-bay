@@ -692,3 +692,51 @@ in-car bust + in-car death checks that step the world afterwards.
   2 cruiser putih mengapit dekat, roadblock di depan, jalan terbuka
   sampai matahari, heli + beam di tengah-atas, trotoar kosong di dekat
   kamera, figur kecil di kejauhan, HUD lengkap tanpa menutupi mobil.
+
+## Round 6 — rebuild total formula Top 5 (18 Nov ~10:27 WIB): 10 elemen wajib, semua diperkuat
+- **Perintah Romi:** hero sebelumnya "tidak sesuai" — rebuild total dari
+  nol mengikuti formula Top 5 persis. Audit shots23 menemukan 5 titik
+  lemah: (1) matahari tidak terbaca sebagai cakram rendah di horizon,
+  (2) lampu polisi hanya merah di frame (biru hilang karena light bar
+  bergantian — satu fase hanya merah, fase lain hanya biru),
+  (3) laut tercuci pucat, (4) jalan sisi kiri gelap, (5) beam heli
+  terlalu lebar (floodlight, bukan searchlight).
+- **1. Matahari SANGAT RENDAH (render.js):** cakram y=30→18 (hampir
+  menyentuh horizon), scale 110→130 (cakram jelas, bukan speck); glare
+  y=55→38, 520x200; halo y=70→60, 900x300; BARU pita horizon
+  (makeHorizonSprite, 1400x90, y=22, opacity 0,3) — pita cahaya hangat
+  di sepanjang horizon ujung jalan.
+- **2+3. Kamera lebih dekat (render.js updateCamera):** back 6,5→5,8,
+  kanan 3,5→3,2, tinggi 2,6→2,4 — GT kini ~34% lebar frame (dalam
+  25-40% formula, naik dari ~28%), spoiler hitam besar makin jelas,
+  kontras pink vs aspal, tidak terpotong tepi bawah.
+- **4. Lampu polisi MERAH-BIRU JELAS (render.js syncCars):** light bar
+  diperbesar (0,5→0,75 lebar, 0,3 tinggi), biru lebih terang
+  (0x2d7dff→0x3d8fff); **di mode hero kedua sisi bar menyala SEKALIGUS
+  (kiri merah, kanan biru)** — sebelumnya bergantian, jadi screenshot
+  hanya menangkap satu warna; di gameplay normal tetap bergantian
+  (flash). Kolam cahaya di jalan diperkuat (opacity 0,5→0,75, r=1,9→2,4)
+  — refleksi merah/biru di aspal basah. Diverifikasi crop: tiap cruiser
+  kini menunjukkan bar merah + biru yang jelas.
+- **5. Heli (render.js):** beam dirampingkan (kerucut bawah r=6,5→4,5,
+  atas r=1,0→0,8) + kolam cahaya r=6,5→4,5 — searchlight ramping,
+  bukan floodlight lebar. Heli tetap kecil jauh di tengah-atas.
+- **9. Laut terbaca (city.js):** tekstur laut diperdalam (gradien
+  #0a5a7a→#127a9c→#1f96b0, glint 0,18→0,10), envMapIntensity 0,2→0,1 —
+  laut kini pita biru-turquoise di kanan frame, bukan pita putih tercuci.
+  Fill light 0,7→0,85 mengangkat sisi jalan yang gelap.
+- **7+10. HUD + aksi (shots.js):** NEXT "Reach the safehouse" →
+  "Bring the money home" (contoh formula); debu drift diperkuat
+  (count 24→32, spread 1,6→2,0).
+- **QA (18 Nov):** selftest **85/85 PASS**; shots **PASS, 0 errors**
+  (1-hero.jpg 176.344 B, wanted=3, policeCars=5); playtest **PASS,
+  0 errors** (playtest9: boot fps=7, jalan 3,4 m, masuk mobil, nyetir
+  18,0 m/s / 13,6 m, keluar 1,6 m, wanted 3, misi "Drive to the docks",
+  HUD + minimap OK, fps=4). Screenshot + crop flanker diverifikasi:
+  10 elemen formula terpenuhi — matahari rendah di ujung jalan, GT pink
+  ~34% frame, kamera rendah-dekat, 2 flanker + roadblock dengan bar
+  merah-biru jelas, heli + beam ramping, 4+1 bintang + IN SIGHT +
+  $38,420, "Lose the cops" + 2:06 + STAGE 3/4 + NEXT "Bring the money
+  home", HUD lengkap 4 sudut, palem merah + laut biru + gedung pastel +
+  FLAMINGO FM + 3 mobil jauh, debu drift + roadblock. Tanpa tank, tanpa
+  macet, tanpa kerumunan, HUD tidak menutupi mobil.
