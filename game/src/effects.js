@@ -22,6 +22,23 @@ const BURST_DEFS = {
   glint:   { count: 8,  speed: 0.6, up: 1.1, life: 1.4, color: [1.0, 0.9, 0.55], size: 0.8, gravity: -0.1 },
 };
 
+// Soft round sprite for particles: hard square points read as a glitch
+// (white blocks plastered on the hero car). A radial-gradient canvas
+// texture makes smoke/dust read as a cloud. Browser-only: only called
+// when a scene exists (the Node smoke test passes scene = null).
+function makeSoftSprite() {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.5)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  return c;
+}
+
 export function createEffects(scene, THREE) {
   const fx = {
     trauma: 0,
@@ -48,7 +65,8 @@ export function createEffects(scene, THREE) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const mat = new THREE.PointsMaterial({ size: 0.45, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false });
+    const softTex = new THREE.CanvasTexture(makeSoftSprite());
+    const mat = new THREE.PointsMaterial({ size: 0.45, map: softTex, vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false });
     const points = new THREE.Points(geo, mat);
     points.frustumCulled = false;
     points.name = 'fx-particles';

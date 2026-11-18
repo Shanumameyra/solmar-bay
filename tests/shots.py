@@ -1,8 +1,8 @@
-# Solmar Bay — retake the 4 staged screenshots (fast).
+# Solmar Bay — retake the ONE hero screenshot (fast).
 # Run: ~/workspace/tools/pw-venv/bin/python tests/shots.py
 # Requires the static server: node serve.ts  (serves game/ on :8080)
-# Each shot is 1280x720 JPEG q82; fails if a pageerror / console error
-# appears, or if any shot exceeds the 256 KiB dossier cap.
+# The shot is 1600x900 JPEG q82 (HD); fails if a pageerror / console error
+# appears, or if the shot exceeds the 256 KiB dossier cap.
 import asyncio
 import os
 import sys
@@ -12,10 +12,7 @@ from playwright.async_api import async_playwright
 BASE = "http://localhost:8080/index.html"
 OUT = os.path.join(os.path.dirname(__file__), "..", "screenshots")
 SHOTS = [
-    ("cover", "1-cover.jpg"),
-    ("onfoot", "2-onfoot.jpg"),
-    ("chase", "3-chase.jpg"),
-    ("mission", "4-mission.jpg"),
+    ("hero", "1-hero.jpg"),
 ]
 MAX_BYTES = 262144
 
@@ -27,7 +24,7 @@ async def main():
         browser = await p.chromium.launch(headless=True, args=[
             "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
         ])
-        page = await browser.new_page(viewport={"width": 1280, "height": 720})
+        page = await browser.new_page(viewport={"width": 1600, "height": 900})
         page.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
         page.on("console", lambda m: errs.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
         ok = True
@@ -50,34 +47,28 @@ async def main():
             print(f"{fname}: {size} bytes ({flag}), wanted={gta.get('wanted')} "
                   f"money=${gta.get('money')} mission={gta.get('mission')!r} "
                   f"policeCars={gta.get('policeCars')}")
-            # Staging checks: the cover must drive on the beach (sea in
-            # frame) with pedestrians near it, and the onfoot shot must
-            # have pedestrians in front of the player.
-            if name == "cover":
+            # Staging checks: the hero must drive on the beach (sea in
+            # frame) at 3 stars, with pedestrians near it and the full
+            # dragnet (5 cruisers + tank) on its tail.
+            if name == "hero":
                 st = await page.evaluate("""() => {
                     const s = window.__GTA.state;
                     const car = s.player.car;
                     const near = (s.peds || []).filter(p => car && Math.hypot(p.x - car.x, p.z - car.z) < 40).length;
-                    return { carX: car ? car.x : null, nearPeds: near, wanted: s.wanted };
+                    const police = (s.cars || []).filter(c => c.isPolice).length;
+                    return { carX: car ? car.x : null, nearPeds: near, wanted: s.wanted,
+                             police, heroHud: !!s.heroHud, heroCam: !!s.heroCam };
                 }""")
                 if st["carX"] is None or st["carX"] >= -168:
-                    print(f"  !! cover car is not on the beach (x={st['carX']})"); ok = False
+                    print(f"  !! hero car is not on the beach (x={st['carX']})"); ok = False
                 if st["nearPeds"] < 2:
-                    print(f"  !! cover has only {st['nearPeds']} peds near the frame"); ok = False
-                if st["wanted"] != 0:
-                    print(f"  !! cover gained heat (wanted={st['wanted']})"); ok = False
-            if name == "onfoot":
-                st = await page.evaluate("""() => {
-                    const s = window.__GTA.state;
-                    const p = s.player;
-                    const ahead = (s.peds || []).filter(ped => {
-                        const dz = ped.z - p.z, dx = ped.x - p.x;
-                        return dz < -2 && dz > -40 && Math.abs(dx) < 15;
-                    }).length;
-                    return { ahead };
-                }""")
-                if st["ahead"] < 2:
-                    print(f"  !! onfoot has only {st['ahead']} peds in front"); ok = False
+                    print(f"  !! hero has only {st['nearPeds']} peds near the frame"); ok = False
+                if st["wanted"] != 3:
+                    print(f"  !! hero wanted is {st['wanted']}, expected 3"); ok = False
+                if st["police"] < 6:
+                    print(f"  !! hero has only {st['police']} police units, expected 6"); ok = False
+                if not st["heroHud"] or not st["heroCam"]:
+                    print(f"  !! hero staging flags missing (hud={st['heroHud']} cam={st['heroCam']})"); ok = False
         await browser.close()
     print("errors:", errs if errs else "none")
     if errs:

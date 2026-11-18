@@ -4,7 +4,7 @@
 // under game/vendor/three/, no network request), and this program hands it in.
 // It copies game/ and screenshots/ from beside this file to /output and writes
 // /output/dossier.json, the summary the judge reads, with the vendored
-// make.fun library. Put 4 JPEG screenshots in screenshots/ (the first by name
+// make.fun library. Put 1-4 JPEG screenshots in screenshots/ (the first by name
 // is the cover) and run it.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
@@ -24,7 +24,7 @@ const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 // judge anyway, so fail loudly instead of handing in an empty folder.
 const shotsDir = join(here, 'screenshots');
 const shotFiles = existsSync(shotsDir)
-  ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f))
+  ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f) && !/^collage\./i.test(f))
   : [];
 if (shotFiles.length === 0) {
   throw new Error('screenshots/ is missing or has no PNG/JPEG files — run tests/shots.py first');
@@ -43,7 +43,13 @@ if (!existsSync(join(out, 'game', 'index.html'))) {
   throw new Error('game/index.html missing after copy — the game folder is incomplete');
 }
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-cpSync(shotsDir, join(out, 'screenshots'), { recursive: true });
+// The collage (collage.jpg) is a repo-only presentation image for the
+// author, not a dossier screenshot — keep it out of the submitted
+// output so the dossier holds exactly the staged screenshots.
+cpSync(shotsDir, join(out, 'screenshots'), {
+  recursive: true,
+  filter: (src) => !/^collage\./i.test(src.split('/').pop() ?? ''),
+});
 
 // The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
 // scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game

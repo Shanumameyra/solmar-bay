@@ -1,7 +1,7 @@
 // Solmar Bay — boot + the one loop (Worker B). Input is read every frame, the
 // world advances in fixed 1/60 s steps (several in a slow frame, none in a fast
 // one), and the renderer paints what is there. Screens: title, play, paused,
-// busted, wasted. ?seed=N fixes the layout; ?shot=cover|onfoot|chase|mission
+// busted, wasted. ?seed=N fixes the layout; ?shot=hero stages the one hero shot.
 // (with &seed=N) stages that scene instead of running the loop, paints it
 // twice and sets window.__shotReady for a screenshot.
 //
@@ -83,6 +83,16 @@ function runShot(name) {
   // Draw twice so particles / HUD settle, then signal the screenshot runner.
   let painted = 0;
   function paint() {
+    // Shot mode has no game loop, so a burst staged by stageShot (e.g.
+    // the hero shot's dust puff) would never fire — drain it here on the
+    // first paint, and advance it ~0.35 s on the second so it reads as a
+    // cloud, not a point cluster, at screenshot time.
+    if (painted === 0 && state.fxBurst && effects) {
+      const b = state.fxBurst;
+      effects.burst(b.type, b.x, b.y ?? 1, b.z, b);
+      state.fxBurst = null;
+    }
+    if (painted === 1 && effects) effects.update(0.35);
     renderer.draw(state, effects);
     effects.applyCamera(renderer.camera, 1 / 60);
     hud.update(state, 'play', 0);

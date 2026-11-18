@@ -96,6 +96,10 @@ export function createPolice() {
         if (policeCars.length < want.cars) {
           this.spawnCar(state, player);
         }
+        // Military tank at 4+ stars (spawnTank guards against duplicates).
+        if (this.wanted >= 4) {
+          this.spawnTank(state, player);
+        }
         if (cops.length < want.cops && !player.inCar) {
           this.spawnCop(state, player);
         }
@@ -248,6 +252,27 @@ export function createPolice() {
       car.roadblockT = 0;
       pushOutOfBuildings(state, car, 2.2);
       cars.push(car);
+    },
+
+    // Military tank (wanted 4+): a slow, heavy police unit that rams. It
+    // is a kind==='tank' car, so render.js draws its own armoured group
+    // instead of the box-car instancing; pursuit/ramming reuse pursueCar.
+    spawnTank(state, player) {
+      const cars = state.cars || (state.cars = []);
+      if (cars.some((c) => c.kind === 'tank')) return null;
+      const a = Math.random() * Math.PI * 2;
+      const d = 30 + Math.random() * 10;
+      const x = clamp(player.x + Math.sin(a) * d, -190, 190);
+      const z = clamp(player.z + Math.cos(a) * d, -190, 190);
+      const tank = createCar('tank', x, z, Math.atan2(player.x - x, player.z - z),
+        { id: nextId++, isPolice: true, driver: 'police' });
+      tank.speed = 6;
+      tank.lightBar = false;
+      tank.roadblock = false;
+      tank.roadblockT = 0;
+      pushOutOfBuildings(state, tank, 2.6);
+      cars.push(tank);
+      return tank;
     },
 
     spawnCop(state, player) {

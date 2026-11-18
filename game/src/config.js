@@ -67,22 +67,23 @@ export const CONFIG = {
   // ---- Car models (built from boxes, distinct silhouettes) ----
   CAR_MODELS: {
     sedan:  { len: 4.4, wid: 1.9, hgt: 1.35, color: 0x3a6fd8, top: 38, name: 'Sedan' },
-    sports: { len: 4.2, wid: 1.9, hgt: 1.15, color: 0xf5c518, top: 46, name: 'Sports' },
+    sports: { len: 4.2, wid: 1.9, hgt: 1.15, color: 0xe01e37, top: 46, name: 'Vespera GT' },
     taxi:   { len: 4.4, wid: 1.9, hgt: 1.4,  color: 0xf2b705, top: 38, name: 'Taxi' },
     truck:  { len: 6.2, wid: 2.3, hgt: 2.2,  color: 0x8a7d6b, top: 30, name: 'Truck' },
     van:    { len: 5.0, wid: 2.0, hgt: 1.9,  color: 0x9aa5b1, top: 34, name: 'Van' },
-    police: { len: 4.5, wid: 1.9, hgt: 1.4,  color: 0x1e4fa3, top: 42, name: 'SBPD Cruiser' },
+    police: { len: 4.5, wid: 1.9, hgt: 1.4,  color: 0xf2f2ee, top: 42, name: 'MBPD Cruiser' },
+    tank:   { len: 4.6, wid: 2.6, hgt: 1.6,  color: 0x4a5240, top: 26, name: 'MBPD Tank' },
   },
 
   // ---- Traffic & pedestrians ----
   TRAFFIC: {
-    COUNT: 10,
+    COUNT: 16,           // more cars on the road — the boulevard must feel busy
     CRUISE_SPEED: 9,      // m/s on streets
     STOP_DIST: 7,         // stop behind the car ahead
     LIGHT_CYCLE: 8,       // seconds per light phase
   },
   PEDS: {
-    COUNT: 18,
+    COUNT: 28,           // more pedestrians — sidewalks must feel alive
     WALK_SPEED: 1.4,
     FLEE_SPEED: 3.4,
     FLEE_RADIUS: 18,      // flee when a threat is closer than this
@@ -125,8 +126,8 @@ export const CONFIG = {
       intro: 'Pick up the package at the docks, bring it to Rosa.',
       steps: ['Drive to the docks', 'Collect the package', 'Deliver to the café'] },
     { id: 'M2', name: 'Hot Wheels', reward: 500, time: 0,
-      intro: 'Steal the yellow sports car at the beachfront. Bring it to the garage.',
-      steps: ['Steal the yellow sports car', 'Deliver it to the garage'] },
+      intro: 'Steal the red sports car at the beachfront. Bring it to the garage.',
+      steps: ['Steal the red sports car', 'Deliver it to the garage'] },
     { id: 'M3', name: 'The Getaway', reward: 800, time: 150,
       intro: 'Three stars, three cruisers. Reach the safehouse in the barrios.',
       steps: ['Reach the safehouse', 'Lose the heat'] },
@@ -164,14 +165,14 @@ export const CONFIG = {
     HOSPITAL: 'hospital',
     PRECINCT: 'precinct',
     GUNSHOP: 'gunshop',
-    BEACH_CAR: 'beachCar', // the yellow sports car for M2
+    BEACH_CAR: 'beachCar', // the red sports car for M2
   },
 
   // ---- Render budget ----
   RENDER: {
     MAX_DRAW_CALLS: 60,
     MAX_TRIS: 150000,
-    SHADOW_MAP: 1024,
+    SHADOW_MAP: 2048,
     FOG_NEAR: 220,
     FOG_FAR: 520,
     CAMERA_FOV: 62,
@@ -179,26 +180,29 @@ export const CONFIG = {
     CAMERA_FAR: 900,
   },
 
-  // ---- Palette (bright golden hour, pastel + chrome) ----
-  // Brightened 18 Nov: the first pass read too dark and gloomy on screen.
-  // A higher sun + stronger hemisphere light + a lighter sky keep the
-  // golden-hour warmth while the city reads as alive and sunlit.
+  // ---- Palette (dramatic sunset, saturated — the reference look) ----
+  // Sunset, not pale golden hour: deep violet overhead, magenta mid-sky,
+  // vivid orange at the horizon; warm haze; pink/peach/cream buildings.
   PALETTE: {
-    SKY_TOP: 0x5a8ac0,
-    SKY_HORIZON: 0xffc27a,
-    SUN: 0xffe0b0,
-    SUN_INTENSITY: 3.4,
-    HEMI_SKY: 0xb8d0f0,
-    HEMI_GROUND: 0x5a4632,
-    HEMI_INTENSITY: 1.05,
-    ASPHALT: 0x45484f,
-    SIDEWALK: 0x9a9184,
-    SAND: 0xd9b380,
-    SEA: 0x3a8ab0,
-    BUILDING_LOW: [0xe8b4a0, 0xf2d5a0, 0xa8c8d8, 0xd8a8b8, 0xc8d8a8],
-    BUILDING_MID: [0xd8c8b8, 0xb8c8d8, 0xe8d8c8, 0xc8b8a8],
-    BUILDING_TOWER: [0x8aa0b8, 0xa8b8d0, 0x7a90a8],
+    SKY_TOP: 0x3a1e5e,
+    SKY_HORIZON: 0xff7a2a,
+    FOG: 0xe88a68,
+    SUN: 0xffc46b,
+    SUN_INTENSITY: 3.8,
+    HEMI_SKY: 0xe8a0b8,
+    HEMI_GROUND: 0x4a2e2a,
+    HEMI_INTENSITY: 1.2,
+    ASPHALT: 0x4a4448,
+    SIDEWALK: 0xa89888,
+    SAND: 0xe0a878,
+    SEA: 0x2a9ab0,
+    BUILDING_LOW: [0xe89a8a, 0xf2c49a, 0xe8a0b8, 0xf5d9a8, 0xd8a0c8, 0xffd23d, 0xff8a3c],
+    BUILDING_MID: [0xd8a8a0, 0xe8b8a8, 0xc8a0b0, 0xf0c8a0, 0xffc46b],
+    BUILDING_TOWER: [0xc88a90, 0xd8a0a8, 0xb87a88],
     GLASS: 0x2a3a4a,
+    ROOF: 0x2e2a33,
+    TREE: [0x3f7a3a, 0x4a8a3a, 0x357a32, 0xa85438, 0xc86a3a],
+    BENCH: 0x8a6a4a,
     NEON: [0xff2d78, 0x00e5ff, 0xffd23d, 0x39ff88, 0xff7a1a],
   },
 };

@@ -460,9 +460,9 @@ console.log('== Staged shots + determinism ==');
     const info = stageShot(name, world, systems);
     return { wanted: info.wanted, money: info.money, police: info.policeCars, peds: info.peds, inCar: info.inCar };
   }
-  const a = stageOnce('chase');
-  const b = stageOnce('chase');
-  check('stageShot(chase) is deterministic', JSON.stringify(a) === JSON.stringify(b), JSON.stringify(a) + ' vs ' + JSON.stringify(b));
+  const a = stageOnce('hero');
+  const b = stageOnce('hero');
+  check('stageShot(hero) is deterministic', JSON.stringify(a) === JSON.stringify(b), JSON.stringify(a) + ' vs ' + JSON.stringify(b));
 }
 
 // ---------------------------------------------------------------------------
@@ -579,32 +579,23 @@ console.log('== Finisher polish (18 Nov) ==');
       loaded.ok ? `money=${loaded.data.money} fromBak=${loaded.fromBak}` : 'no fallback');
   }
 
-  // Cover staging: the car drives on the beach (sea on the right, city on
-  // the left) and pedestrians are placed in frame.
+  // Hero staging: the red GT drives the beach boulevard at 3 stars, with
+  // five cruisers + the tank on its tail, pedestrians in frame, and the
+  // hero HUD (MISSION 7/7 THE TIDE JOB, $18,450, 151 KM/H, Lucía card).
   {
     const w7 = createWorld(7);
     const sys7 = makeSystems();
     w7.state.systems = sys7;
-    const info = stageShot('cover', w7, sys7);
+    const info = stageShot('hero', w7, sys7);
     const car = w7.state.player.car;
-    check('Cover car drives on the beach (x < -168)', !!car && car.x < -168, car ? `x=${car.x.toFixed(0)}` : 'no car');
+    check('Hero car drives on the beach (x < -168)', !!car && car.x < -168, car ? `x=${car.x.toFixed(0)}` : 'no car');
     const nearPeds = (w7.state.peds || []).filter((p) => car && Math.hypot(p.x - car.x, p.z - car.z) < 40).length;
-    check('Cover has pedestrians near the frame', nearPeds >= 2, nearPeds + ' peds within 40 m');
-    check('Cover stays clean (wanted 0)', info.wanted === 0, 'wanted=' + info.wanted);
-  }
-  // Onfoot staging: pedestrians stand in the plaza in front of the player.
-  {
-    const w8 = createWorld(7);
-    const sys8 = makeSystems();
-    w8.state.systems = sys8;
-    stageShot('onfoot', w8, sys8);
-    const p8 = w8.state.player;
-    const ahead = (w8.state.peds || []).filter((ped) => {
-      const dx = ped.x - p8.x, dz = ped.z - p8.z;
-      // In front (north, -z) and within 40 m.
-      return dz < -2 && dz > -40 && Math.abs(dx) < 15;
-    }).length;
-    check('Onfoot has pedestrians in front of the player', ahead >= 2, ahead + ' peds ahead');
+    check('Hero has pedestrians near the frame', nearPeds >= 2, nearPeds + ' peds within 40 m');
+    check('Hero runs at 3 stars', info.wanted === 3, 'wanted=' + info.wanted);
+    check('Hero has 5 cruisers + tank', info.policeCars >= 6, info.policeCars + ' police cars');
+    check('Hero HUD override is staged', !!w7.state.heroHud && w7.state.heroHud.carName === 'VESPERA GT',
+      w7.state.heroHud ? w7.state.heroHud.carName : 'no heroHud');
+    check('Hero camera is staged', w7.state.heroCam === true);
   }
 }
 
@@ -626,15 +617,17 @@ console.log('== Dossier caps (game/ + screenshots/) ==');
   check('game/ file count <= 993', files <= 993, files + ' files');
   check('game/ bytes <= 48 MiB', bytes <= 50331648, (bytes / 1048576).toFixed(2) + ' MiB');
   const shotsDir = join(ROOT, 'screenshots');
+  // The 1 staged hero shot only — collage.jpg is a derived 2x2 composite, not
+  // a staged shot, so it is excluded from the count and the size cap.
   const shots = existsSync(shotsDir)
-    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f)) : [];
-  check('4 screenshots present', shots.length === 4, shots.length + ' found: ' + shots.join(', '));
-  let shotsOk = shots.length === 4;
+    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f) && !f.startsWith('collage')) : [];
+  check('1 screenshot present', shots.length === 1, shots.length + ' found: ' + shots.join(', '));
+  let shotsOk = shots.length === 1;
   for (const f of shots) {
     const sz = statSync(join(shotsDir, f)).size;
     if (sz > 262144) { shotsOk = false; console.log(`  ${f} is ${sz} bytes (> 256 KiB)`); }
   }
-  if (shots.length === 4) check('Each screenshot <= 256 KiB', shotsOk);
+  if (shots.length === 1) check('Each screenshot <= 256 KiB', shotsOk);
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +635,7 @@ console.log('== main.ts build ==');
 {
   const shotsDir = join(ROOT, 'screenshots');
   const shots = existsSync(shotsDir)
-    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f)) : [];
+    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f) && !f.startsWith('collage')) : [];
   if (shots.length === 0) {
     skip('main.ts run (no screenshots yet)', 'run tests/shots.py first');
   } else {

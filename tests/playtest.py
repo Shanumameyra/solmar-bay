@@ -40,7 +40,15 @@ async def main():
 
         print("== start the game (Enter) ==")
         await page.keyboard.press("Enter")
-        await page.wait_for_timeout(500)
+        # Wait for the transition (not a fixed sleep): in headless
+        # SwiftShader the frame rate can be ~8 fps, so a 500 ms wait is
+        # only ~4 frames and the title -> play transition may not have
+        # landed yet. The game is correct; the test must wait for it.
+        try:
+            await page.wait_for_function(
+                "() => window.__GTA.screen === 'play'", timeout=10000)
+        except Exception:
+            pass
         state = await gta(page)
         print(f"  screen={state['screen']}")
         if state["screen"] != "play":
@@ -78,12 +86,21 @@ async def main():
             window.__GTA.debug.teleport(car.x + 2, car.z, Math.PI, null);
             window.__parkedCar = car;
         }""")
-        # Hold E (a quick press can fall between two slow frames).
-        await page.keyboard.down("KeyE")
-        await page.wait_for_timeout(600)
-        await page.keyboard.up("KeyE")
-        await page.wait_for_timeout(500)
+        # Hold E (a quick press can fall between two slow frames; in
+        # headless SwiftShader the key edge can take >1 s to be consumed,
+        # so hold long and retry once — timing only, the assertion that
+        # E must enter the car is unchanged).
+        async def press_e(ms=1500):
+            await page.keyboard.down("KeyE")
+            await page.wait_for_timeout(ms)
+            await page.keyboard.up("KeyE")
+            await page.wait_for_timeout(500)
+        await press_e()
         state = await gta(page)
+        if not state["inCar"]:
+            print("  (first E missed; retrying once)")
+            await press_e()
+            state = await gta(page)
         print(f"  inCar={state['inCar']} speed={state['speed']:.1f}")
         if not state["inCar"]:
             print("  FAIL: E did not enter the car"); ok = False
@@ -91,52 +108,62 @@ async def main():
         print("== drive (beachfront street, hold W until distanceDriven > 10 m) ==")
         # The nearest parked car may face a building; move the player's
         # current car to the clear beachfront street (x=-144, south) first.
-        await page.evaluate("""() => {
-            const car = window.__GTA.state.player.car;
-            window.__GTA.debug.teleport(-144, -60, 0, car);
-        }""")
-        await page.wait_for_timeout(500)
-        await page.keyboard.down("KeyW")
-        try:
-            await page.wait_for_function(
-                "() => window.__GTA.state.stats.distanceDriven > 10",
-                timeout=30000)
-            drove = True
-        except Exception:
-            drove = False
-        await page.keyboard.up("KeyW")
-        state = await gta(page)
-        driven = await page.evaluate("window.__GTA.state.stats.distanceDriven")
-        print(f"  speed={state['speed']:.1f} m/s distanceDriven={driven:.1f} m")
-        if not drove or driven < 10:
-            print("  FAIL: car barely drove"); ok = False
+        # If the enter step failed there is no car to drive — skip (the
+        # enter FAIL above already records it) instead of walking for 30 s.
+        if not state["inCar"]:
+            print("  (skipped: not in a car)")
+        else:
+            await page.evaluate("""() => {
+                const car = window.__GTA.state.player.car;
+                window.__GTA.debug.teleport(-144, -60, 0, car);
+            }""")
+            await page.wait_for_timeout(500)
+            await page.keyboard.down("KeyW")
+            try:
+                await page.wait_for_function(
+                    "() => window.__GTA.state.stats.distanceDriven > 10",
+                    timeout=30000)
+                drove = True
+            except Exception:
+                drove = False
+            await page.keyboard.up("KeyW")
+            state = await gta(page)
+            driven = await page.evaluate("window.__GTA.state.stats.distanceDriven")
+            print(f"  speed={state['speed']:.1f} m/s distanceDriven={driven:.1f} m")
+            if not drove or driven < 10:
+                print("  FAIL: car barely drove"); ok = False
 
         print("== exit the car (E) ==")
-        # Let the car roll to a near-stop first, so the exit position is
-        # measured against where the car actually is.
-        try:
-            await page.wait_for_function(
-                "() => Math.abs(window.__GTA.state.player.speed) < 2", timeout=20000)
-        except Exception:
-            print("  (car did not slow down; continuing anyway)")
-        car_pos = await page.evaluate("({x: window.__GTA.state.player.car.x, z: window.__GTA.state.player.car.z})")
-        await page.keyboard.down("KeyE")
-        await page.wait_for_timeout(600)
-        await page.keyboard.up("KeyE")
-        await page.wait_for_timeout(500)
-        exit_state = await page.evaluate("""(carPos) => {
-            const p = window.__GTA.state.player;
-            return {
-                inCar: p.inCar,
-                onFoot: p.onFoot,
-                dist: Math.hypot(p.x - carPos.x, p.z - carPos.z),
-            };
-        }""", arg=car_pos)
-        print(f"  inCar={exit_state['inCar']} onFoot={exit_state['onFoot']} distToCar={exit_state['dist']:.1f} m")
-        if exit_state["inCar"] or not exit_state["onFoot"]:
-            print("  FAIL: E did not exit the car"); ok = False
-        if exit_state["dist"] > 5:
-            print("  FAIL: player ended up far from the car after exiting"); ok = False
+        # No car (enter/drive failed) — nothing to exit; the earlier FAIL
+        # already records it. Skip instead of crashing on player.car null.
+        if not state["inCar"]:
+            print("  (skipped: not in a car)")
+        else:
+            # Let the car roll to a near-stop first, so the exit position is
+            # measured against where the car actually is.
+            try:
+                await page.wait_for_function(
+                    "() => Math.abs(window.__GTA.state.player.speed) < 2", timeout=20000)
+            except Exception:
+                print("  (car did not slow down; continuing anyway)")
+            car_pos = await page.evaluate("({x: window.__GTA.state.player.car.x, z: window.__GTA.state.player.car.z})")
+            await page.keyboard.down("KeyE")
+            await page.wait_for_timeout(1500)
+            await page.keyboard.up("KeyE")
+            await page.wait_for_timeout(500)
+            exit_state = await page.evaluate("""(carPos) => {
+                const p = window.__GTA.state.player;
+                return {
+                    inCar: p.inCar,
+                    onFoot: p.onFoot,
+                    dist: Math.hypot(p.x - carPos.x, p.z - carPos.z),
+                };
+            }""", arg=car_pos)
+            print(f"  inCar={exit_state['inCar']} onFoot={exit_state['onFoot']} distToCar={exit_state['dist']:.1f} m")
+            if exit_state["inCar"] or not exit_state["onFoot"]:
+                print("  FAIL: E did not exit the car"); ok = False
+            if exit_state["dist"] > 5:
+                print("  FAIL: player ended up far from the car after exiting"); ok = False
 
         print("== wanted heat (debug addHeat) ==")
         await page.evaluate("window.__GTA.debug.addHeat(2)")

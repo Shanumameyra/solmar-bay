@@ -52,7 +52,7 @@ Open http://localhost:8080 and press Enter. No build step, no network — the ga
 
 ```sh
 node --import ./tests/register-three.mjs tests/selftest.mjs   # headless: RNG, A*, missions, police, combat, save, shots, dossier caps, main.ts
-~/workspace/tools/pw-venv/bin/python tests/shots.py           # retake the 4 screenshots (needs node serve.ts)
+~/workspace/tools/pw-venv/bin/python tests/shots.py           # retake the 1 hero screenshot (needs node serve.ts)
 ~/workspace/tools/pw-venv/bin/python tests/playtest.py        # browser playtest: boot, walk, drive, wanted, mission, HUD
 ```
 

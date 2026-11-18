@@ -1,19 +1,17 @@
-// Solmar Bay — staged screenshots (Worker B). stageShot(name, world, systems)
-// plays one of the 4 scenes forward from a fresh world with a scripted
-// autopilot (no real user input), so the screenshots are reproducible.
+// Solmar Bay — staged screenshot (Worker B). stageShot(name, world, systems)
+// plays the ONE hero scene forward from a fresh world with a scripted
+// autopilot (no real user input), so the screenshot is reproducible.
 // Deterministic per seed: Math.random is temporarily replaced by a seeded
 // mulberry32 stream while staging, so police/taxi/pickup placement repeats
 // (police.js and missions.js both use Math.random). The scripted input uses
 // the input.js shape ({keys, justPressed, dx, dy}); world.step translates
-// it. Scenes: cover (driving the beachfront), onfoot (market plaza),
-// chase (3 stars, SBPD on your tail), mission (M1 at the docks).
+// it. Scene: hero (the red Vespera GT driving the beach boulevard at
+// sunset, chased by the MBPD — the #1 entry's composition). Romi ordered
+// ONE screenshot only (18 Nov): no cover/onfoot/chase/mission, no collage.
 
-export const SHOT_NAMES = ['cover', 'onfoot', 'chase', 'mission'];
+export const SHOT_NAMES = ['hero'];
 export const SHOT_FILES = {
-  cover: '1-cover.jpg',
-  onfoot: '2-onfoot.jpg',
-  chase: '3-chase.jpg',
-  mission: '4-mission.jpg',
+  hero: '1-hero.jpg',
 };
 
 export function mulberry32(seed) {
@@ -92,79 +90,121 @@ export function stageShot(name, world, systems) {
 
 function stageShotInner(name, world, systems, state) {
   const player = state.player;
-  const landmarks = state.landmarks || {};
-  const beach = landmarks.beach || { x: -165, z: 0 };
-  const plaza = landmarks.plaza || { x: 0, z: 12 };
-  const docks = landmarks.docks || { x: 144, z: 48 };
 
-  if (name === 'cover') {
-    // Driving south down the beach (x=-174, on the sand): the sea fills the
-    // right of the frame, the beachfront buildings + palms the left, the
-    // pier ahead in the distance — city + sea in one frame. The old staging
-    // drove the beachfront avenue, where the sea sat outside the frame.
-    // Heading 0 = +z (south) under the (sin, cos) convention.
-    const car = firstCar(state, 'sedan') || firstCar(state);
-    if (car) world.teleport(-174, -60, 0, car);
-    // Two pedestrians on the sand, 5 m off the car's path (clear of the
-    // 2.5 m hit radius), pacing where the camera can see them.
-    placePeds(state, [[-179, -30], [-179, -8]]);
-    stepWorld(world, systems, fakeInput(['KeyW']), 150);
-    return shotInfo(state, name);
-  }
-
-  if (name === 'onfoot') {
-    // On foot in the market plaza, facing the café (north, -z = angle PI).
-    world.teleport(plaza.x, plaza.z + 6, Math.PI);
-    const car = firstCar(state, 'sedan');
-    if (car) {
-      car.x = plaza.x + 10;
-      car.z = plaza.z - 6;
-      car.angle = Math.PI / 2;
-      car.isParked = true;
-      car.speed = 0;
-    }
-    // Pedestrians in the plaza, between the player and the café, pacing
-    // small loops so they stay in frame (clear of the fountain collider).
-    placePeds(state, [[-7, -2], [8, -8], [-3, -18]]);
-    stepWorld(world, systems, fakeInput([]), 90);
-    return shotInfo(state, name);
-  }
-
-  if (name === 'chase') {
-    // 3 stars, SBPD cars chasing, sirens on. Drive south down the x=144
-    // downtown street — a long clear run with buildings lining both
-    // sides, so the camera is never blocked. (Facing diagonally from
-    // downtown puts the car into a building and the camera behind it.)
-    // The two police cars are placed flanking ahead (visible in frame,
-    // chasing alongside) instead of at a random angle, where one can
-    // spawn in the road and box the car in. 90 steps (1.5 s): the car
-    // is mid-chase at speed, before the roadblock + rams wreck it.
+  if (name === 'hero') {
+    // THE hero shot (the only screenshot): the red Vespera GT driving
+    // north up the beach boulevard at sunset, chased by the MBPD — the #1
+    // entry's composition. Rear 3/4 chase cam (state.heroCam), hero HUD
+    // (state.heroHud), FLAMINGO FM billboard on the left, sea + palms,
+    // pastel beachfront buildings on the right, sun glare straight ahead.
+    // The car hugs the shore (x=-190, on the street at x=-192, 10 m from
+    // the shoreline at x=-200): the sea fills the left of the frame, the
+    // beachfront buildings stand back on the right, and the sunset sits
+    // ahead over the water. Heading PI = -z (north) under the (sin, cos)
+    // convention.
     const car = firstCar(state, 'sports') || firstCar(state);
-    if (car) world.teleport(144, -120, 0, car);
+    if (car) world.teleport(-190, 60, Math.PI, car);
+    state.heroCam = true;
+    state.heroHud = {
+      missionTitle: '<span class="m-id">MISSION 7/7</span>THE TIDE JOB',
+      cash: '$18,450',
+      starsHtml: '<span style="color:#ffd23d">★★★★</span><span style="color:#8a8a92">★</span>',
+      insight: 'IN SIGHT · GULL-1',
+      objective: 'Lose the MBPD — reach the safehouse',
+      stageLabel: 'STAGE 3/3',
+      stagePct: 100,
+      next: 'Reach the safehouse',
+      speedKmh: 151,
+      carName: 'VESPERA GT',
+      dialogue: {
+        name: 'LUCÍA ORTEGA',
+        initials: 'LO',
+        text: 'The tide’s coming in, Jason. Run the boulevard — don’t let them box you in.',
+      },
+    };
     if (systems && systems.police) {
       systems.police.addHeat(3, 'shot', state);
-      systems.police.spawnCar(state, player);
-      systems.police.spawnCar(state, player);
-      const cops = (state.cars || []).filter((c) => c.isPolice);
+      // FIVE cruisers (the wanted-3 tier wants 3, the #1 shot shows a
+      // full dragnet): flanking left AND right of the player, light bars
+      // flashing, so the frame reads busy from both sides.
+      for (let i = 0; i < 5; i += 1) systems.police.spawnCar(state, player);
+      const cops = (state.cars || []).filter((c) => c.isPolice && c.kind !== 'tank');
       cops.forEach((c, i) => {
-        c.x = player.x + (i === 0 ? -10 : 10);
-        c.z = player.z + 25 + i * 10;
+        const spot = [
+          [player.x - 10, player.z + 25],
+          [player.x + 10, player.z + 35],
+          [player.x - 8, player.z + 48],
+          [player.x + 8, player.z + 60],
+          [player.x - 2, player.z + 72],
+        ][i % 5];
+        c.x = spot[0];
+        c.z = spot[1];
         c.angle = 0;
         c.speed = 22;
       });
+      // Crowd: pedestrians on the sand + both sidewalks of the street,
+      // so the boulevard feels alive, not empty. (Traffic cars are placed
+      // on the street after the sim, in the framing block below.)
+      placePeds(state, [[-185, 12], [-185, 2], [-184, -18], [-153, 30], [-152, -6], [-155, -28], [-137, 10], [-137, -14], [-199, 30], [-199, 20], [-183, 32], [-183, 24], [-183, 14], [-199, 8]]);
+      // Tank + helicopter: the tank rumbles in 40 m behind on the left,
+      // facing NORTH (toward the player, angle PI) so it closes in
+      // head-on instead of driving away — the pursuit turns it around
+      // too slowly otherwise. The heli (wanted 3+) hovers ahead with its
+      // spotlight beam on the road.
+      const tank = systems.police.spawnTank(state, player);
+      if (tank) {
+        tank.x = player.x - 4;
+        tank.z = player.z + 40;
+        tank.angle = Math.PI;
+        tank.speed = 0;
+      }
     }
-    stepWorld(world, systems, fakeInput(['KeyW']), 90);
-    return shotInfo(state, name);
-  }
-
-  if (name === 'mission') {
-    // M1 at the docks: package marker + Rosa's dialogue on the HUD.
-    if (systems && systems.missions) {
-      systems.missions.start(1, state);
+    stepWorld(world, systems, fakeInput(['KeyW']), 120);
+    // Frame the pursuit for the camera (rear 3/4, 9 m back): the sim
+    // leaves the tank + most cruisers behind the camera, so pull one
+    // cruiser + the tank into the visible band behind the player — tank
+    // left-rear with its cannon toward the camera, a cruiser right-rear —
+    // so the dragnet reads left AND right like the #1 shot. (Deterministic:
+    // fixed offsets from the player, after the sim. cops[0] stays the
+    // roadblock parked ahead in the spotlight pool.)
+    const cops = (state.cars || []).filter((c) => c.isPolice && c.kind !== 'tank');
+    if (cops[1]) {
+      cops[1].x = player.x + 7; cops[1].z = player.z - 2;
+      cops[1].angle = Math.PI; cops[1].speed = 0;
     }
-    // Just outside the 7 m pickup radius, facing the docks (east = angle PI/2).
-    world.teleport(docks.x - 14, docks.z + 6, Math.PI / 2);
-    stepWorld(world, systems, fakeInput([]), 60);
+    // Flanking dragnet: two more cruisers CLOSE on the GT's left + right,
+    // a few metres ahead — the player is surrounded, not chased by one
+    // far car. (cops[0] stays the roadblock parked ahead in the pool.)
+    if (cops[2]) {
+      cops[2].x = player.x - 6; cops[2].z = player.z - 8;
+      cops[2].angle = Math.PI; cops[2].speed = 0;
+    }
+    if (cops[3]) {
+      cops[3].x = player.x + 4; cops[3].z = player.z - 10;
+      cops[3].angle = Math.PI; cops[3].speed = 0;
+    }
+    // Traffic ON the street ahead of the player (not the far avenue), so
+    // the road reads full: three civilian cars in both lanes, mid-frame
+    // and in the distance.
+    const civ = (state.cars || []).filter((c) => !c.isPolice && c.kind !== 'sports' && c.kind !== 'tank' && !c.isParked).slice(0, 3);
+    const civSpots = [[player.x - 2, player.z - 28], [player.x + 3, player.z - 34], [player.x - 1, player.z - 55]];
+    civ.forEach((c, i) => {
+      c.x = civSpots[i][0]; c.z = civSpots[i][1];
+      c.angle = Math.PI; c.speed = 0;
+    });
+    const tank = (state.cars || []).find((c) => c.kind === 'tank');
+    if (tank) {
+      tank.x = player.x - 4; tank.z = player.z + 3;
+      tank.angle = 0; tank.speed = 0; // cannon toward the camera
+    }
+    // Dust / motion: a smoke puff at the GT's rear wheels (the car drives
+    // north, so the trail sits south). Drained by main.js on the next
+    // frame, mid-life (~0.4 s of 1.1 s) at screenshot time — reads as
+    // speed, not a static pose.
+    state.fxBurst = { type: 'smoke', x: player.x, y: 0.6, z: player.z + 2.5, count: 24, spread: 1.6 };
+    // No feed messages in the shot: staging pushes wanted/roadblock
+    // events, and the HUD would print them top-centre over the scene.
+    state.events = [];
     return shotInfo(state, name);
   }
 

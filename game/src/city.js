@@ -147,105 +147,230 @@ function makeCanvas(w, h) {
   return c;
 }
 
-// One 1024x1024 texture for the whole ground: asphalt, sidewalks, lane dashes,
-// crosswalks, sand on the west edge, plaza paving in the centre.
+// One 2048x2048 texture for the whole ground: asphalt, sidewalks, lane
+// dashes, crosswalks, sand on the west edge, plaza paving in the centre.
+// HD: 2048 (5.1 px/m) so lane markings and curbs stay crisp instead of
+// blurry. Wet-look support: asphalt speckle (a separate seeded rng, so the
+// layout rng is untouched), darker tire-wear bands along the street centres
+// and curb lines, so the boulevard reads as a real damp street at sunset.
 function makeGroundTexture() {
-  const c = makeCanvas(1024, 1024);
+  const SIZE = 2048;
+  const c = makeCanvas(SIZE, SIZE);
   if (!c) return null;
   const g = c.getContext('2d');
-  const S = 1024 / (HALF * 2); // px per metre
+  const S = SIZE / (HALF * 2); // px per metre
   const toPx = (v) => (v + HALF) * S;
-  // Base: asphalt (brightened for the golden-hour look, not near-black).
-  g.fillStyle = '#45484f';
-  g.fillRect(0, 0, 1024, 1024);
+  // Base: asphalt (warm dark, not near-black).
+  g.fillStyle = '#4a4448';
+  g.fillRect(0, 0, SIZE, SIZE);
+  // Asphalt speckle (fixed seed — does not consume the layout rng).
+  const srng = createRandom(1234);
+  for (let i = 0; i < 900; i += 1) {
+    const v = srng.next();
+    g.fillStyle = v < 0.5 ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.10)';
+    g.fillRect(srng.next() * SIZE, srng.next() * SIZE, 4, 4);
+  }
   // Sand strip on the west edge (x < -168).
-  g.fillStyle = '#d9b380';
-  g.fillRect(0, 0, toPx(-168), 1024);
+  g.fillStyle = '#e0a878';
+  g.fillRect(0, 0, toPx(-168), SIZE);
   // Sea is a separate plane; the sand edge gets a wet band.
   g.fillStyle = '#c8a06a';
-  g.fillRect(toPx(-176), 0, toPx(-168) - toPx(-176), 1024);
-  // Plaza paving in the centre (|x|<=48, |z|<=48).
+  g.fillRect(toPx(-176), 0, toPx(-168) - toPx(-176), SIZE);
+  // Plaza paving in the centre (|x|<=48, |z|<=48) + paving joints.
   g.fillStyle = '#b8a888';
   g.fillRect(toPx(-48), toPx(-48), toPx(48) - toPx(-48), toPx(48) - toPx(-48));
+  g.strokeStyle = 'rgba(0,0,0,0.15)';
+  g.lineWidth = 2;
+  for (let d = -48; d <= 48; d += 8) {
+    g.beginPath(); g.moveTo(toPx(d), toPx(-48)); g.lineTo(toPx(d), toPx(48)); g.stroke();
+    g.beginPath(); g.moveTo(toPx(-48), toPx(d)); g.lineTo(toPx(48), toPx(d)); g.stroke();
+  }
   // Sidewalks: lighter strips along every street.
-  g.fillStyle = '#9a9184';
+  g.fillStyle = '#a89888';
   for (const s of STREETS) {
     const w = (CONFIG.CITY.STREET / 2 + CONFIG.CITY.SIDEWALK) * S;
     const c0 = s * S;
-    g.fillRect(0, toPx(s) - w, 1024, w * 2);
-    g.fillRect(toPx(s) - w, 0, w * 2, 1024);
+    g.fillRect(0, toPx(s) - w, SIZE, w * 2);
+    g.fillRect(toPx(s) - w, 0, w * 2, SIZE);
   }
   // Re-lay asphalt over the street centres so sidewalks read as edges.
-  g.fillStyle = '#45484f';
+  g.fillStyle = '#4a4448';
   for (const s of STREETS) {
     const w = (CONFIG.CITY.STREET / 2) * S;
-    g.fillRect(0, toPx(s) - w, 1024, w * 2);
-    g.fillRect(toPx(s) - w, 0, w * 2, 1024);
+    g.fillRect(0, toPx(s) - w, SIZE, w * 2);
+    g.fillRect(toPx(s) - w, 0, w * 2, SIZE);
+  }
+  // Curb lines: a thin light edge where sidewalk meets road.
+  g.fillStyle = 'rgba(232,228,216,0.5)';
+  for (const s of STREETS) {
+    const e = (CONFIG.CITY.STREET / 2) * S;
+    g.fillRect(0, toPx(s) - e - 2, SIZE, 4);
+    g.fillRect(0, toPx(s) + e - 2, SIZE, 4);
+    g.fillRect(toPx(s) - e - 2, 0, 4, SIZE);
+    g.fillRect(toPx(s) + e - 2, 0, 4, SIZE);
+  }
+  // Tire-wear bands: darker strips where wheels actually run.
+  g.fillStyle = 'rgba(0,0,0,0.16)';
+  for (const s of STREETS) {
+    for (const off of [-2.2, 2.2]) {
+      g.fillRect(0, toPx(s + off) - 1.4 * S, SIZE, 2.8 * S);
+      g.fillRect(toPx(s + off) - 1.4 * S, 0, 2.8 * S, SIZE);
+    }
   }
   // Lane dashes (centre of each street) + crosswalk stripes at intersections.
   g.fillStyle = '#e8e4d8';
   for (const s of STREETS) {
     for (let d = -192; d < 192; d += 16) {
-      g.fillRect(toPx(d), toPx(s) - 1, 8 * S, 2);
-      g.fillRect(toPx(s) - 1, toPx(d), 2, 8 * S);
+      g.fillRect(toPx(d), toPx(s) - 2, 8 * S, 4);
+      g.fillRect(toPx(s) - 2, toPx(d), 4, 8 * S);
     }
     for (const t of STREETS) {
       for (let k = -2; k <= 2; k += 1) {
-        g.fillRect(toPx(t) - 5 + k * 4 * S * 0.5, toPx(s) - 7 * S, 2 * S, 3 * S);
-        g.fillRect(toPx(t) - 5 + k * 4 * S * 0.5, toPx(s) + 4 * S, 2 * S, 3 * S);
+        g.fillRect(toPx(t) - 10 + k * 4 * S * 0.5, toPx(s) - 7 * S, 2 * S, 3 * S);
+        g.fillRect(toPx(t) - 10 + k * 4 * S * 0.5, toPx(s) + 4 * S, 2 * S, 3 * S);
       }
     }
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
+  tex.anisotropy = 8;
   return tex;
 }
 
-// Window grid texture for building facades (lit windows glow warm).
-// The base is a LIGHT grey-blue: a dark navy base made every building read
-// as a black slab with glowing windows, which is what made the city look
-// gloomy even under a bright sun. The facade colour now comes through.
+// Window grid texture for building facades (HD: 256x512): a warm gradient
+// base, floor slab lines, framed windows in varied states (lit warm / lit
+// cool / curtains / dark glass with a sunset sheen), and a ground-floor
+// shopfront band (the canvas bottom = the building's ground floor). The
+// facade colour now comes through the instance colour; the texture only
+// adds the detail.
 function makeWindowTexture(rows, cols, rng) {
-  const c = makeCanvas(128, 256);
+  const W = 256, H = 512;
+  const c = makeCanvas(W, H);
   if (!c) return null;
   const g = c.getContext('2d');
-  g.fillStyle = '#7a8a9a';
-  g.fillRect(0, 0, 128, 256);
-  const cw = 128 / cols, rh = 256 / rows;
+  const base = g.createLinearGradient(0, 0, 0, H);
+  base.addColorStop(0, '#8a97a8');
+  base.addColorStop(0.5, '#7a8a9a');
+  base.addColorStop(1, '#6a7a8a');
+  g.fillStyle = base;
+  g.fillRect(0, 0, W, H);
+  const cw = W / cols, rh = H / rows;
   for (let r = 0; r < rows; r += 1) {
+    // Floor slab line.
+    g.fillStyle = 'rgba(0,0,0,0.18)';
+    g.fillRect(0, r * rh, W, 4);
     for (let col = 0; col < cols; col += 1) {
-      const lit = rng.next() < 0.42;
-      g.fillStyle = lit ? (rng.next() < 0.5 ? '#ffd98a' : '#ffeec0') : '#5a6a7a';
-      g.fillRect(col * cw + 3, r * rh + 4, cw - 6, rh - 8);
+      const x = col * cw + 6, y = r * rh + 8, w = cw - 12, h = rh - 16;
+      // Window frame.
+      g.fillStyle = '#3a4552';
+      g.fillRect(x - 2, y - 2, w + 4, h + 4);
+      const roll = rng.next();
+      if (roll < 0.38) {
+        // Lit warm (sunset lamps).
+        g.fillStyle = rng.next() < 0.6 ? '#ffd98a' : '#ffeec0';
+        g.fillRect(x, y, w, h);
+      } else if (roll < 0.48) {
+        // Lit cool.
+        g.fillStyle = '#bfe0ff';
+        g.fillRect(x, y, w, h);
+      } else if (roll < 0.58) {
+        // Curtains.
+        g.fillStyle = '#d8a0a0';
+        g.fillRect(x, y, w, h);
+        g.fillStyle = 'rgba(0,0,0,0.25)';
+        g.fillRect(x + w * 0.45, y, w * 0.1, h);
+      } else {
+        // Dark glass with a sunset sheen diagonal.
+        g.fillStyle = '#4a5a6e';
+        g.fillRect(x, y, w, h);
+        g.fillStyle = 'rgba(255,180,120,0.35)';
+        g.beginPath();
+        g.moveTo(x, y + h);
+        g.lineTo(x + w * 0.6, y);
+        g.lineTo(x + w * 0.85, y);
+        g.lineTo(x + w * 0.25, y + h);
+        g.closePath();
+        g.fill();
+      }
     }
+  }
+  // Ground-floor shopfront (canvas bottom = ground floor): dark plate,
+  // warm awning strip, large glass panes.
+  const shopY = H - rh;
+  g.fillStyle = '#2a2d33';
+  g.fillRect(0, shopY, W, rh);
+  g.fillStyle = '#ffb36b';
+  g.fillRect(0, shopY, W, 10);
+  for (let col = 0; col < cols; col += 1) {
+    g.fillStyle = rng.next() < 0.5 ? '#ffd98a' : '#5a6a7a';
+    g.fillRect(col * cw + 6, shopY + 16, cw - 12, rh - 24);
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
   return tex;
 }
 
-// Neon sign texture: glowing original text on a dark plate.
+// Sea texture (HD: 512x512): bright TURQUOISE tropical water — teal near
+// shore to deeper blue-green offshore — with white wave streaks and a warm
+// sunset glint band on the west (sun) side. A dusky violet sea read as
+// murk; the reference water is bright turquoise.
+function makeSeaTexture() {
+  const SIZE = 512;
+  const c = makeCanvas(SIZE, SIZE);
+  if (!c) return null;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, SIZE, 0);
+  grad.addColorStop(0, '#0f6a8a');
+  grad.addColorStop(0.5, '#1a8aa8');
+  grad.addColorStop(1, '#2aa8b8');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, SIZE, SIZE);
+  const srng = createRandom(777);
+  g.strokeStyle = 'rgba(255,255,255,0.16)';
+  g.lineWidth = 2;
+  for (let i = 0; i < 40; i += 1) {
+    const y = srng.next() * SIZE;
+    const x = srng.next() * (SIZE - 100);
+    const len = 40 + srng.next() * 100;
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + len, y);
+    g.stroke();
+  }
+  const glint = g.createLinearGradient(0, 0, SIZE, 0);
+  glint.addColorStop(0, 'rgba(255,170,90,0.18)');
+  glint.addColorStop(0.4, 'rgba(255,170,90,0.05)');
+  glint.addColorStop(1, 'rgba(255,170,90,0)');
+  g.fillStyle = glint;
+  g.fillRect(0, 0, SIZE, SIZE);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Neon sign texture (HD: 512x128): glowing original text on a dark plate.
 function makeSignTexture(text, color, rng) {
-  const c = makeCanvas(256, 64);
+  const c = makeCanvas(512, 128);
   if (!c) return null;
   const g = c.getContext('2d');
   g.fillStyle = '#101018';
-  g.fillRect(0, 0, 256, 64);
-  g.font = 'bold 34px system-ui, sans-serif';
+  g.fillRect(0, 0, 512, 128);
+  g.font = 'bold 68px system-ui, sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   g.shadowColor = color;
-  g.shadowBlur = 16;
+  g.shadowBlur = 32;
   g.fillStyle = color;
-  g.fillText(text, 128, 34);
+  g.fillText(text, 256, 68);
   g.shadowBlur = 0;
   g.fillStyle = '#ffffff';
   g.globalAlpha = 0.85;
-  g.fillText(text, 128, 34);
+  g.fillText(text, 256, 68);
   g.globalAlpha = 1;
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
   return tex;
 }
 
@@ -280,25 +405,72 @@ export function buildCity(seed) {
   // ---- Ground: one textured plane + sea to the west ----
   const groundTex = makeGroundTexture();
   const groundMat = groundTex
-    ? new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.95, metalness: 0 })
-    : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.ASPHALT, roughness: 0.95 });
+    ? new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.32, metalness: 0.3, envMapIntensity: 0.5 })
+    : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.ASPHALT, roughness: 0.32, metalness: 0.3 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   ground.name = 'ground';
   group.add(ground);
+  // Wet-look sea: low roughness so the sun glints across the water, but
+  // low metalness / envMapIntensity so the blue base stays blue instead
+  // of mirroring the orange sunset env map (at 0.9 it read as orange
+  // sand, not water).
+  const seaTex = makeSeaTexture();
   const sea = new THREE.Mesh(
     new THREE.PlaneGeometry(120, HALF * 2 + 40),
-    new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.SEA, roughness: 0.35, metalness: 0.1 }),
+    seaTex
+      ? new THREE.MeshStandardMaterial({ map: seaTex, roughness: 0.5, metalness: 0.1, envMapIntensity: 0.2, fog: false })
+      : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.SEA, roughness: 0.5, metalness: 0.1, envMapIntensity: 0.2, fog: false }),
   );
   sea.rotation.x = -Math.PI / 2;
   sea.position.set(-HALF - 60, -0.15, 0);
   sea.name = 'sea';
   group.add(sea);
+  // Surf foam: a white, wavy strip where the waves break on the shore
+  // (x=-200). A canvas texture with soft white blobs on transparency,
+  // tiled along the beach, so the waterline reads as breaking surf and
+  // the sea does not meet the sand as a hard flat edge.
+  const foamTex = (() => {
+    const c = makeCanvas(128, 512);
+    if (!c) return null;
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, 128, 512);
+    const frng = createRandom(4242);
+    for (let i = 0; i < 90; i += 1) {
+      const x = frng.next() * 128;
+      const y = frng.next() * 512;
+      const r = 4 + frng.next() * 14;
+      const grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, 'rgba(255,255,255,0.85)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(1, 8);
+    return tex;
+  })();
+  const foam = new THREE.Mesh(
+    new THREE.PlaneGeometry(4, HALF * 2 + 40),
+    new THREE.MeshBasicMaterial({
+      map: foamTex, transparent: true, opacity: 0.85, depthWrite: false,
+    }),
+  );
+  foam.rotation.x = -Math.PI / 2;
+  foam.position.set(-HALF - 0.5, -0.08, 0);
+  foam.name = 'surf-foam';
+  group.add(foam);
 
   // ---- Buildings: one InstancedMesh per height band ----
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
   const winTex = makeWindowTexture(10, 6, rng);
+  const winTexTall = makeWindowTexture(16, 6, rng);
   const bands = [
     { name: 'low', minH: 8, maxH: 15, colors: CONFIG.PALETTE.BUILDING_LOW },
     { name: 'mid', minH: 20, maxH: 35, colors: CONFIG.PALETTE.BUILDING_MID },
@@ -341,7 +513,7 @@ export function buildCity(seed) {
     const list = planned.filter((b) => b.band === bi);
     if (!list.length) return;
     const mat = new THREE.MeshStandardMaterial({
-      map: winTex, roughness: 0.85, metalness: 0.05,
+      map: band.name === 'tower' ? winTexTall : winTex, roughness: 0.85, metalness: 0.05,
     });
     const mesh = new THREE.InstancedMesh(boxGeo, mat, list.length);
     mesh.castShadow = true;
@@ -360,6 +532,76 @@ export function buildCity(seed) {
     group.add(mesh);
   });
 
+  // Roof caps: thin dark slabs on every building top, so the roof reads as
+  // a roof (not a stretched window texture) from the chase camera.
+  const roofMesh = new THREE.InstancedMesh(boxGeo,
+    new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.ROOF, roughness: 0.9 }), planned.length);
+  planned.forEach((b, i) => {
+    dummy.position.set(b.x, b.h + 0.25, b.z);
+    dummy.scale.set(b.w * 1.02, 0.5, b.d * 1.02);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    roofMesh.setMatrixAt(i, dummy.matrix);
+  });
+  roofMesh.instanceMatrix.needsUpdate = true;
+  roofMesh.name = 'roof-caps';
+  group.add(roofMesh);
+
+  // ---- Balconies + awnings on the beachfront row (x=-162) ----
+  // The colourful beachfront facades face the sea (west). Balconies
+  // (slabs + railings) on the upper floors and sloped, colourful awnings
+  // over the ground-floor shopfronts break the flat "box with a window
+  // grid" read — the reference facades are layered, not flat.
+  const beachRow = planned.filter((b) => b.district === 'beach');
+  const AWNING_COLORS = [0xff5a8a, 0xff8a3d, 0x2ab8a0, 0xffd23d, 0xe85a7a];
+  const balconySpots = [];
+  const awningSpots = [];
+  beachRow.forEach((b, bi) => {
+    const floors = Math.max(1, Math.floor(b.h / 4.5));
+    for (let f = 1; f < floors; f += 1) {
+      const zOff = (bi % 2 === 0 ? -4.5 : 4.5);
+      balconySpots.push({ x: b.x - b.w / 2 - 0.5, y: f * 4.2 + 0.6, z: b.z + zOff });
+    }
+    awningSpots.push({ x: b.x - b.w / 2 - 0.6, y: 3.4, z: b.z - 4.5, color: AWNING_COLORS[bi % AWNING_COLORS.length] });
+    awningSpots.push({ x: b.x - b.w / 2 - 0.6, y: 3.4, z: b.z + 4.5, color: AWNING_COLORS[(bi + 2) % AWNING_COLORS.length] });
+  });
+  const balconySlab = new THREE.InstancedMesh(boxGeo,
+    new THREE.MeshStandardMaterial({ color: 0xe8dcc8, roughness: 0.9 }), Math.max(1, balconySpots.length));
+  const balconyRail = new THREE.InstancedMesh(boxGeo,
+    new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.7, metalness: 0.4 }), Math.max(1, balconySpots.length));
+  balconySpots.forEach((s, i) => {
+    dummy.position.set(s.x, s.y, s.z);
+    dummy.scale.set(1.0, 0.18, 2.6);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    balconySlab.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(s.x - 0.5, s.y + 0.55, s.z);
+    dummy.scale.set(0.06, 1.0, 2.6);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    balconyRail.setMatrixAt(i, dummy.matrix);
+  });
+  balconySlab.instanceMatrix.needsUpdate = true;
+  balconyRail.instanceMatrix.needsUpdate = true;
+  balconySlab.name = 'balconies';
+  balconyRail.name = 'balcony-rails';
+  group.add(balconySlab);
+  group.add(balconyRail);
+  const awningMesh = new THREE.InstancedMesh(boxGeo,
+    new THREE.MeshStandardMaterial({ roughness: 0.85 }), Math.max(1, awningSpots.length));
+  awningSpots.forEach((s, i) => {
+    dummy.position.set(s.x, s.y, s.z);
+    dummy.scale.set(1.2, 0.08, 2.8);
+    dummy.rotation.set(0.55, 0, 0);
+    dummy.updateMatrix();
+    awningMesh.setMatrixAt(i, dummy.matrix);
+    awningMesh.setColorAt(i, colorObj.setHex(s.color));
+  });
+  awningMesh.instanceMatrix.needsUpdate = true;
+  if (awningMesh.instanceColor) awningMesh.instanceColor.needsUpdate = true;
+  awningMesh.name = 'awnings';
+  group.add(awningMesh);
+
   // ---- Neon signs on downtown towers (emissive planes, original text) ----
   const SIGNS = ["ROSA'S", 'PIER 9', 'SOLMAR', 'TACOS', 'HOTEL LUNA'];
   const signMeshes = [];
@@ -377,35 +619,133 @@ export function buildCity(seed) {
     signMeshes.push(sign);
   });
 
-  // ---- Palms along the beachfront + plaza (instanced trunks + crowns) ----
+  // ---- FLAMINGO FM billboard on the beach (the #1 entry's landmark) ----
+  // A big pink billboard on the sand, facing the boulevard — the hero shot
+  // drives north past it on the left, sea behind it, sun glare ahead.
+  function makeBillboardTexture() {
+    const c = makeCanvas(512, 256);
+    if (!c) return null;
+    const g = c.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, '#ff5aa8');
+    grad.addColorStop(1, '#ff2d78');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 512, 256);
+    g.fillStyle = '#ffd23d';
+    g.beginPath(); g.arc(256, 62, 34, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff';
+    g.font = '900 58px sans-serif';
+    g.textAlign = 'center';
+    g.fillText('FLAMINGO', 256, 158);
+    g.fillStyle = '#ffe9a8';
+    g.font = '900 84px sans-serif';
+    g.fillText('FM', 256, 240);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+  const bbTex = makeBillboardTexture();
+  const bbMat = bbTex
+    ? new THREE.MeshBasicMaterial({ map: bbTex })
+    : new THREE.MeshBasicMaterial({ color: 0xff2d78 });
+  const billboard = new THREE.Mesh(new THREE.PlaneGeometry(18, 9), bbMat);
+  billboard.position.set(-196, 6.5, 12);
+  billboard.rotation.y = Math.PI / 2; // face east, toward the boulevard
+  billboard.name = 'flamingo-fm-billboard';
+  group.add(billboard);
+  const bbPostMat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.8 });
+  for (const dz of [-5.5, 5.5]) {
+    const post = new THREE.Mesh(boxGeo, bbPostMat);
+    post.scale.set(0.5, 6.5, 0.5);
+    post.position.set(-196, 3.25, 12 + dz);
+    group.add(post);
+  }
+  colliders.push({ minX: -198, minZ: 3, maxX: -194, maxZ: 21 });
+
+  // ---- Palms along the beachfront + plaza (curved trunks + fronds) ----
+  // A palm is a gently leaning curved trunk (TubeGeometry, not a straight
+  // 6-sided cylinder) topped by DROOPING fronds — tapered, curved leaves
+  // radiating from the crown — not a green cone or a faceted blob.
   const palmSpots = [];
   for (let z = -180; z <= 180; z += 24) palmSpots.push({ x: -182 + rng.range(-3, 3), z });
   for (let i = 0; i < 8; i += 1) {
     palmSpots.push({ x: rng.range(-40, 40), z: rng.range(-40, 40) });
   }
-  const trunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 5, 6);
+  const trunkCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0.22, 1.6, 0),
+    new THREE.Vector3(0.38, 3.2, 0),
+    new THREE.Vector3(0.42, 4.8, 0),
+  ]);
+  const trunkGeo = new THREE.TubeGeometry(trunkCurve, 8, 0.22, 8, false);
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 1 });
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, palmSpots.length);
-  const crownGeo = new THREE.ConeGeometry(2.2, 2.4, 7);
-  const crownMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3a, roughness: 1 });
+  // One drooping frond: a tapered plane, curved down toward the tip.
+  function makeFrondGeo() {
+    const g = new THREE.PlaneGeometry(0.95, 2.8, 1, 6);
+    g.rotateX(-Math.PI / 2); // lie flat, length along +Z
+    g.translate(0, 0, 1.4);  // base at z=0, tip at z=2.8
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i += 1) {
+      const x = pos.getX(i);
+      const z = pos.getZ(i);
+      pos.setX(i, x * (1 - (z / 2.8) * 0.75)); // taper to a point
+      pos.setY(i, -(z * z) * 0.16);             // droop (parabolic)
+    }
+    g.computeVertexNormals();
+    return g;
+  }
+  const FRONDS_PER_PALM = 9;
+  const frondGeo = makeFrondGeo();
+  const frondMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 1, side: THREE.DoubleSide,
+  });
+  const fronds = new THREE.InstancedMesh(frondGeo, frondMat, palmSpots.length * FRONDS_PER_PALM);
+  // Crown core: a small flattened sphere filling the centre where the
+  // fronds meet (so the top is not a hollow starburst).
+  const crownGeo = new THREE.IcosahedronGeometry(0.85, 1);
+  const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
   const crowns = new THREE.InstancedMesh(crownGeo, crownMat, palmSpots.length);
+  const frondDummy = new THREE.Object3D();
+  frondDummy.rotation.order = 'YXZ';
   palmSpots.forEach((p, i) => {
-    dummy.position.set(p.x, 2.5, p.z);
-    dummy.scale.set(1, 1, 1);
-    dummy.rotation.set(0, rng.next() * Math.PI, 0);
+    const lean = rng.next() * Math.PI * 2;
+    dummy.position.set(p.x, 0, p.z);
+    dummy.scale.set(1, 1.35, 1);
+    dummy.rotation.set(0, lean, 0);
     dummy.updateMatrix();
     trunks.setMatrixAt(i, dummy.matrix);
-    dummy.position.set(p.x, 5.6, p.z);
+    dummy.position.set(p.x, 6.6, p.z);
+    dummy.scale.set(1, 0.55, 1);
+    dummy.rotation.set(0, 0, 0);
     dummy.updateMatrix();
     crowns.setMatrixAt(i, dummy.matrix);
+    crowns.setColorAt(i, colorObj.setHex(rng.pick(CONFIG.PALETTE.TREE)));
+    for (let f = 0; f < FRONDS_PER_PALM; f += 1) {
+      const yaw = lean + (f / FRONDS_PER_PALM) * Math.PI * 2 + rng.range(-0.15, 0.15);
+      const tilt = rng.range(-0.55, -0.05); // arch up, then the droop pulls the tip down
+      frondDummy.position.set(p.x, 6.75, p.z);
+      frondDummy.scale.set(1.15, 1, 1.15);
+      frondDummy.rotation.set(tilt, yaw, 0);
+      frondDummy.updateMatrix();
+      const fi = i * FRONDS_PER_PALM + f;
+      fronds.setMatrixAt(fi, frondDummy.matrix);
+      fronds.setColorAt(fi, colorObj.setHex(rng.pick(CONFIG.PALETTE.TREE)));
+    }
   });
   trunks.instanceMatrix.needsUpdate = true;
   crowns.instanceMatrix.needsUpdate = true;
+  fronds.instanceMatrix.needsUpdate = true;
+  if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
+  if (fronds.instanceColor) fronds.instanceColor.needsUpdate = true;
   trunks.castShadow = true;
   trunks.name = 'palms-trunks';
   crowns.name = 'palms-crowns';
+  fronds.name = 'palms-fronds';
   group.add(trunks);
   group.add(crowns);
+  group.add(fronds);
 
   // ---- Market plaza: stalls, café, benches, fountain ----
   const stallMat = new THREE.MeshStandardMaterial({ color: 0xc8a878, roughness: 0.9 });
@@ -455,6 +795,31 @@ export function buildCity(seed) {
   fountain.name = 'fountain';
   group.add(fountain);
   colliders.push({ minX: -4.4, minZ: -4.4, maxX: 4.4, maxZ: 4.4 });
+  // Fountain water: a reflective disc on top of the basin.
+  const fountainWater = new THREE.Mesh(
+    new THREE.CircleGeometry(3.6, 20),
+    new THREE.MeshStandardMaterial({ color: 0x7ab8d8, roughness: 0.1, metalness: 0.3, envMapIntensity: 1.0 }),
+  );
+  fountainWater.rotation.x = -Math.PI / 2;
+  fountainWater.position.set(0, 0.92, 0);
+  fountainWater.name = 'fountain-water';
+  group.add(fountainWater);
+  // Benches around the plaza (one InstancedMesh, with colliders).
+  const benchGeo = new THREE.BoxGeometry(1.8, 0.5, 0.6);
+  const benchMat = new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.BENCH, roughness: 0.9 });
+  const benchSpots = [[-12, -8], [12, -8], [-12, 32], [12, 32]];
+  const benches = new THREE.InstancedMesh(benchGeo, benchMat, benchSpots.length);
+  benchSpots.forEach(([x, z], i) => {
+    dummy.position.set(x, 0.25, z);
+    dummy.scale.set(1, 1, 1);
+    dummy.rotation.set(0, i % 2 === 0 ? 0 : Math.PI, 0);
+    dummy.updateMatrix();
+    benches.setMatrixAt(i, dummy.matrix);
+    colliders.push({ minX: x - 0.9, minZ: z - 0.3, maxX: x + 0.9, maxZ: z + 0.3 });
+  });
+  benches.instanceMatrix.needsUpdate = true;
+  benches.name = 'plaza-benches';
+  group.add(benches);
 
   // ---- Port: containers + cranes (east edge) ----
   const contColors = [0xc8552e, 0x2e7ac8, 0x3a9a5a, 0xc8a02e, 0x8a5a9a];
@@ -527,7 +892,7 @@ export function buildCity(seed) {
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.7 });
   const poleGeo = new THREE.CylinderGeometry(0.12, 0.16, 5.5, 6);
   const poles = new THREE.InstancedMesh(poleGeo, poleMat, lights.positions.length);
-  const headGeo = new THREE.SphereGeometry(0.32, 8, 6);
+  const headGeo = new THREE.BoxGeometry(0.55, 1.1, 0.55);
   const heads = new THREE.InstancedMesh(headGeo,
     new THREE.MeshBasicMaterial({ color: 0xffffff }), lights.positions.length);
   lights.positions.forEach((p, i) => {
@@ -550,6 +915,39 @@ export function buildCity(seed) {
   group.add(heads);
   lights.poles = poles;
   lights.heads = heads;
+
+  // ---- Street trees along the beachfront avenue + plaza edges ----
+  const treeSpots = [];
+  for (let z = -156; z <= 156; z += 24) {
+    treeSpots.push({ x: -153, z });
+    treeSpots.push({ x: -135, z });
+  }
+  [[-54, -12], [54, -12], [-54, 36], [54, 36]].forEach(([x, z]) => treeSpots.push({ x, z }));
+  const treeTrunkGeo = new THREE.CylinderGeometry(0.15, 0.25, 2.5, 6);
+  const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6a4a30, roughness: 1 });
+  const treeTrunks = new THREE.InstancedMesh(treeTrunkGeo, treeTrunkMat, treeSpots.length);
+  const treeCrownGeo = new THREE.IcosahedronGeometry(1.6, 0);
+  const treeCrownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
+  const treeCrowns = new THREE.InstancedMesh(treeCrownGeo, treeCrownMat, treeSpots.length);
+  treeSpots.forEach((p, i) => {
+    dummy.position.set(p.x, 1.25, p.z);
+    dummy.scale.set(1, 1, 1);
+    dummy.rotation.set(0, rng.next() * Math.PI, 0);
+    dummy.updateMatrix();
+    treeTrunks.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(p.x, 3.1, p.z);
+    dummy.scale.set(1, 0.75, 1);
+    dummy.updateMatrix();
+    treeCrowns.setMatrixAt(i, dummy.matrix);
+    treeCrowns.setColorAt(i, colorObj.setHex(rng.pick(CONFIG.PALETTE.TREE)));
+  });
+  treeTrunks.instanceMatrix.needsUpdate = true;
+  treeCrowns.instanceMatrix.needsUpdate = true;
+  if (treeCrowns.instanceColor) treeCrowns.instanceColor.needsUpdate = true;
+  treeTrunks.name = 'street-trees-trunks';
+  treeCrowns.name = 'street-trees-crowns';
+  group.add(treeTrunks);
+  group.add(treeCrowns);
 
   // ---- Nav grid: block every cell a building collider covers ----
   const navGrid = new NavGrid(-HALF, HALF, 2);
@@ -591,7 +989,7 @@ export function buildCity(seed) {
       { model: 'taxi', x: 30, z: 0, angle: Math.PI / 2 },
       { model: 'van', x: 0, z: 54, angle: 0 },
       { model: 'sedan', x: 48, z: 30, angle: 0 },
-      { model: 'sports', x: -176, z: -72, angle: 0 }, // M2 target (yellow)
+      { model: 'sports', x: -176, z: -72, angle: 0 }, // M2 target (violet)
       { model: 'sedan', x: -144, z: 30, angle: Math.PI },
       { model: 'truck', x: 144, z: -30, angle: 0 },
       { model: 'sedan', x: 30, z: -48, angle: Math.PI / 2 },
