@@ -1,4 +1,4 @@
-// Solmar Bay — Three.js renderer (Worker A, v2 rebuild).
+// Solmar Bay — Three.js renderer (Worker A, v3 rebuild).
 // createRenderer(canvas) -> { draw, resize, buildScene, snapCamera,
 // getStats, scene, camera, renderer }.
 //  - Bright golden hour: sun 4.2, hemisphere 1.0, ACES exposure 1.32,

@@ -1,4 +1,4 @@
-// Solmar Bay — configuration & data tables (Worker A, v2 rebuild).
+// Solmar Bay — configuration & data tables (Worker A, v3 rebuild).
 // Every tunable number lives here so the other modules stay thin.
 // Heading convention (shared): a heading/angle `a` means forward =
 // (sin(a), 0, cos(a)) in world space; angle 0 = +z (south), PI = -z (north).

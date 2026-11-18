@@ -1,4 +1,4 @@
-// Solmar Bay — arcade car physics + enter/steal (Worker A, v2 rebuild).
+// Solmar Bay — arcade car physics + enter/steal (Worker A, v3 rebuild).
 // Arcade, not simulation: instant-feeling accel, speed-sensitive steering,
 // handbrake drift, forgiving collisions. Heading convention: forward =
 // (sin(angle), 0, cos(angle)); angle 0 = +z (south), PI = -z (north).

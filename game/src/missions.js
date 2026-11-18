@@ -1,7 +1,7 @@
 // missions.js — story missions from Mama Rosa, taxi fares, cash pickups.
 //
-// Owns state.mission / state.pickups / state.taxiMarker. The step INDEX is
-// `stepIndex` (NOT `step` — that name is the update method; assigning
+// Owns state.mission / state.pickups / state.taxiMarker. The step INDEX
+// is `stepIndex` (NOT `step` — that name is the update method; assigning
 // this.step = 0 once overwrote the method and froze every mission).
 // Uses Math.random (shots.js seeds it while staging, so staged missions
 // are deterministic).
@@ -21,7 +21,7 @@ function pushEv(state, ev) {
   }
 }
 
-function inCollider(state, x, z, pad) {
+function insideCollider(state, x, z, pad) {
   const cs = state.colliders;
   if (!cs) return false;
   for (const c of cs) {
@@ -46,7 +46,7 @@ function missionDef(i) {
   );
 }
 
-function nextCarId(state) {
+function nextNumericCarId(state) {
   let max = 0;
   let count = 0;
   for (const c of state.cars || []) {
@@ -84,8 +84,8 @@ export function createMissions() {
       api._taxiT = 8;
     },
 
-    // Load the next mission to play from a save: earlier missions count as
-    // done (replayable for half reward).
+    // Load the next mission to play from a save: earlier missions count
+    // as done (replayable for half reward).
     loadIndex(i) {
       api.index = clamp(i | 0, 0, 3);
       api.phase = 'idle';
@@ -185,7 +185,7 @@ export function createMissions() {
       api.phase = 'idle';
       api._nextPending = api.index < 3 ? api.index + 1 : null;
       api.timer = 0;
-      // Advance the pointer to the pending mission now (not only when the
+      // Advance the pointer to the pending mission NOW (not only when the
       // player walks back to the café): state.mission.index is what the
       // save records, and leaving it on the finished mission would make a
       // save/load replay the job that was just completed instead of the
@@ -250,7 +250,7 @@ export function createMissions() {
       car.color = 0xffd21f;
       car.isParked = true;
       car.driver = null;
-      if (typeof car.id !== 'number') car.id = nextCarId(state);
+      if (typeof car.id !== 'number') car.id = nextNumericCarId(state);
       (state.cars = state.cars || []).push(car);
       api.markedCarId = car.id;
       return car;
@@ -270,7 +270,7 @@ export function createMissions() {
       for (let i = 0; i < 24; i++) {
         const tx = (Math.random() * 2 - 1) * 190;
         const tz = (Math.random() * 2 - 1) * 190;
-        if (!inCollider(state, tx, tz, 2)) return { x: tx, z: tz };
+        if (!insideCollider(state, tx, tz, 2)) return { x: tx, z: tz };
       }
       return { x: plaza.x, z: plaza.z };
     },
@@ -347,7 +347,8 @@ export function createMissions() {
       }
       if (t.phase === 'pickup') {
         const c = (state.peds || []).find((pd) => pd.id === t.customerId);
-        if (!c) {
+        if (!c || c.state === 'down') {
+          // Customer vanished — or got knocked down. Fare cancelled.
           api._clearTaxi(state);
           return;
         }

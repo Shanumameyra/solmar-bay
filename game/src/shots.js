@@ -137,6 +137,7 @@ export function stageShot(name, world, systems) {
     const snap = {
       name,
       ok: true,
+      seed,
       screen: state.screen,
       wanted: state.wanted,
       money: state.money,

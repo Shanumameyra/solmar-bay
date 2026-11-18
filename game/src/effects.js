@@ -86,11 +86,12 @@ export function createEffects(scene, THREE) {
   api._spawn = function _spawn(type, x, y, z, opts) {
     if (!enabled) return;
     const def = TYPES[type] || TYPES.dust;
-    const count = (opts && opts.count) || def.count;
+    // ?? (not ||): an explicit count/spread of 0 is a real value.
+    const count = opts?.count ?? def.count;
     for (let n = 0; n < count; n++) {
       const i = api._cursor;
       api._cursor = (api._cursor + 1) % MAX_PARTICLES;
-      const spread = (opts && opts.spread) || 0.6;
+      const spread = opts?.spread ?? 0.6;
       api._pos[i * 3] = x + (Math.random() * 2 - 1) * spread;
       api._pos[i * 3 + 1] = y + (Math.random() * 2 - 1) * spread * 0.6;
       api._pos[i * 3 + 2] = z + (Math.random() * 2 - 1) * spread;

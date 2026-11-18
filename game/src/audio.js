@@ -13,6 +13,10 @@ const CHORDS = [
   [98.0, 123.47, 146.83], // G
 ];
 
+function clamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
 export function createAudio() {
   let ctx = null;
   let master = null;
@@ -203,7 +207,8 @@ export function createAudio() {
       const spd = p.car ? p.car.speed ?? 0 : p.speed ?? 0;
       const speed01 = clamp01(spd / top);
       // Engine pitch uses the car's own topSpeed (sports 46, truck 30),
-      // not a hardcoded 38.
+      // not a hardcoded 38. On foot the engine is silent (gain 0) even
+      // at a sprint — the walk speed is not a car speed.
       const throttle =
         !!input &&
         !!input.keys &&
@@ -244,8 +249,4 @@ export function createAudio() {
     },
   };
   return api;
-}
-
-function clamp01(v) {
-  return v < 0 ? 0 : v > 1 ? 1 : v;
 }

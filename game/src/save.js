@@ -26,7 +26,7 @@ function sanitize(d) {
   if (d.version !== SAVE_VERSION) return null;
   return {
     version: SAVE_VERSION,
-    money: num(d.money, 150),
+    money: Math.max(0, num(d.money, 150)),
     missionIndex: Math.max(0, Math.min(3, Math.floor(num(d.missionIndex, 0)))),
     missionsDone: Math.max(0, Math.floor(num(d.missionsDone, 0))),
     carsStolen: Math.max(0, Math.floor(num(d.carsStolen, 0))),

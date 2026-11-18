@@ -1,4 +1,4 @@
-// Solmar Bay — keyboard + mouse input (Worker A, v2 rebuild).
+// Solmar Bay — keyboard + mouse input (Worker A, v3 rebuild).
 // Returns the input object itself: { keys:Set, dx, dy, justPressed:Set,
 // pointerLocked, attach(), detach(), endFrame() }.
 //  - keys holds KeyboardEvent.code values (held keys).

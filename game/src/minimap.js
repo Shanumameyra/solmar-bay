@@ -26,6 +26,10 @@ export function createMinimap(canvas) {
       const s = size / SPAN; // px per metre
       const t = state.time ?? 0;
       const p = state.player || { x: 0, z: 0, yaw: 0 };
+      const cars = state.cars || [];
+      const peds = state.peds || [];
+      const pickups = state.pickups || [];
+      const colliders = state.colliders || [];
 
       // Sand base, then sea (x < -200) and land.
       ctx.fillStyle = '#c9b078';
@@ -53,7 +57,7 @@ export function createMinimap(canvas) {
 
       // Buildings from the collider AABBs.
       ctx.fillStyle = '#565b63';
-      for (const b of state.colliders || []) {
+      for (const b of colliders) {
         const [bx, bz] = toMap(b.minX, b.minZ, size);
         const [ex, ez] = toMap(b.maxX, b.maxZ, size);
         ctx.fillRect(bx, bz, Math.max(1, ex - bx), Math.max(1, ez - bz));
@@ -61,7 +65,7 @@ export function createMinimap(canvas) {
 
       // Cash pickups (gold dots).
       ctx.fillStyle = '#ffd23d';
-      for (const pk of state.pickups || []) {
+      for (const pk of pickups) {
         if (pk.taken) continue;
         const [x, y] = toMap(pk.x, pk.z, size);
         ctx.beginPath();
@@ -95,7 +99,7 @@ export function createMinimap(canvas) {
 
       // Traffic (grey dots).
       ctx.fillStyle = '#c8ccd2';
-      for (const car of state.cars || []) {
+      for (const car of cars) {
         if (car.isPolice) continue;
         const [x, y] = toMap(car.x, car.z, size);
         ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
@@ -104,14 +108,14 @@ export function createMinimap(canvas) {
       // Police (blue/red flashing, 2 Hz).
       const flashRed = Math.floor(t * 2) % 2 === 0;
       ctx.fillStyle = flashRed ? '#ff3b30' : '#3d8fff';
-      for (const car of state.cars || []) {
+      for (const car of cars) {
         if (!car.isPolice) continue;
         const [x, y] = toMap(car.x, car.z, size);
         ctx.beginPath();
         ctx.arc(x, y, 3, 0, Math.PI * 2);
         ctx.fill();
       }
-      for (const ped of state.peds || []) {
+      for (const ped of peds) {
         if (!ped.isCop) continue;
         const [x, y] = toMap(ped.x, ped.z, size);
         ctx.beginPath();

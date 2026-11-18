@@ -1,4 +1,4 @@
-// Solmar Bay — traffic cars + pedestrians (Worker A, v2 rebuild).
+// Solmar Bay — traffic cars + pedestrians (Worker A, v3 rebuild).
 // 10 traffic cars follow rectangular street loops and stop at red lights;
 // 18 pedestrians walk sidewalk loops around blocks and flee (A* path away)
 // from honks, gunfire and near misses. AI layers (game-ai skill):

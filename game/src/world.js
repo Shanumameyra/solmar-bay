@@ -1,5 +1,5 @@
 // Solmar Bay — the world: central state + fixed-step update (Worker A,
-// v2 rebuild). Owns the update order: input -> player -> player car ->
+// v3 rebuild). Owns the update order: input -> player -> player car ->
 // traffic -> police -> missions -> combat. Systems are Worker B's and are
 // called only when present (they land in parallel), so the world runs
 // standalone in node tests with systems = {}.

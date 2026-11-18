@@ -1,4 +1,4 @@
-// Solmar Bay — the city (Worker A, v2 rebuild).
+// Solmar Bay — the city (Worker A, v3 rebuild).
 // Builds the whole static city from a seed: ground, streets, sand + sea,
 // buildings (InstancedMesh, 3 height bands, bright pastel facades), palms,
 // streetlights, traffic lights, neon signs, beachfront row, pier, plaza +

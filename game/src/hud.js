@@ -50,7 +50,7 @@ export function createHud(document) {
     objDist: $('obj-dist'),
     objTimer: $('obj-timer'),
     clock: $('clock'),
-    speed: $('speed'),
+    speed: $('speed-num'),
     feed: $('feed'),
     dialogue: $('dialogue'),
     dialogueText: $('dialogue-text'),
@@ -70,6 +70,9 @@ export function createHud(document) {
   let flashT = 0;
   let lastHp = 100;
   let lastScreen = '';
+  let lastNow = 0; // game time of the most recent update() — showMessage
+  // stamps feed items with this, so a message shown before the first
+  // update (at game time 0) is not instantly aged out once time > 6 s.
 
   function setText(el, key, value) {
     if (last[key] !== value) {
@@ -105,6 +108,7 @@ export function createHud(document) {
       if (!state) return;
       const p = state.player || {};
       const now = state.time ?? 0;
+      lastNow = now;
 
       // Drain the transient event queue into the feed (and flashes).
       if (Array.isArray(state.events)) {
@@ -219,7 +223,7 @@ export function createHud(document) {
     },
 
     showMessage(text, kind) {
-      addFeed(text, kind, 0);
+      addFeed(text, kind, lastNow);
     },
 
     // Test/externals hook: force the flash (e.g. after a big hit).

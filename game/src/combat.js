@@ -108,6 +108,11 @@ export function createCombat() {
       if (ped.hp <= 0) {
         ped.hp = 0;
         ped.state = 'down';
+        // A downed ped stops fleeing: traffic must not drag a body
+        // across the map on its old flee path.
+        ped.flee = false;
+        ped.fleeT = 0;
+        ped.fleeFrom = null;
         // Civilians get back up after downT; cops stay down.
         ped.downT = ped.isCop ? 1e9 : 8;
         if (ped.isCop) {

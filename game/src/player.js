@@ -1,4 +1,4 @@
-// Solmar Bay — on-foot controller (Worker A, v2 rebuild).
+// Solmar Bay — on-foot controller (Worker A, v3 rebuild).
 // WASD relative to the camera yaw, Shift to run, mouse look, E to
 // enter/exit (steal when parked), H to honk. While driving, the player's
 // x/z/heading sync to the car every step so the minimap, the HUD objective

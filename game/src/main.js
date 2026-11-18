@@ -151,6 +151,7 @@ export function buildGame() {
     world.reset();
     state = world.state;
     ctx.state = state;
+    ctx.autoSaveT = 0;
     police.reset();
     missions.reset();
     combat.reset();
