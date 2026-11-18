@@ -142,10 +142,16 @@ function stageShotInner(name, world, systems, state) {
         c.angle = 0;
         c.speed = 22;
       });
-      // Crowd: pedestrians on the sand + both sidewalks of the street,
-      // so the boulevard feels alive, not empty. (Traffic cars are placed
+      // Crowd: 24 pedestrians — sand + avenue + BOTH roadsides of the
+      // street (west sidewalk x=-199, east roadside x=-181), so the
+      // sidewalks read crowded, not 1-2 people. (Traffic cars are placed
       // on the street after the sim, in the framing block below.)
-      placePeds(state, [[-185, 12], [-185, 2], [-184, -18], [-153, 30], [-152, -6], [-155, -28], [-137, 10], [-137, -14], [-199, 30], [-199, 20], [-183, 32], [-183, 24], [-183, 14], [-199, 8]]);
+      placePeds(state, [
+        [-185, 12], [-185, 2], [-184, -18],
+        [-153, 30], [-152, -6], [-155, -28], [-137, 10], [-137, -14],
+        [-199, 30], [-199, 22], [-199, 16], [-199, 10], [-199, 4], [-199, -2], [-199, -8],
+        [-181, 30], [-181, 26], [-181, 20], [-181, 14], [-181, 8], [-181, 2], [-181, -4], [-181, -10], [-181, -16],
+      ]);
       // Tank + helicopter: the tank rumbles in 40 m behind on the left,
       // facing NORTH (toward the player, angle PI) so it closes in
       // head-on instead of driving away — the pursuit turns it around
@@ -183,11 +189,19 @@ function stageShotInner(name, world, systems, state) {
       cops[3].x = player.x + 4; cops[3].z = player.z - 10;
       cops[3].angle = Math.PI; cops[3].speed = 0;
     }
-    // Traffic ON the street ahead of the player (not the far avenue), so
-    // the road reads full: three civilian cars in both lanes, mid-frame
-    // and in the distance.
-    const civ = (state.cars || []).filter((c) => !c.isPolice && c.kind !== 'sports' && c.kind !== 'tank' && !c.isParked).slice(0, 3);
-    const civSpots = [[player.x - 2, player.z - 28], [player.x + 3, player.z - 34], [player.x - 1, player.z - 55]];
+    // Traffic JAM on the street ahead of the player (not the far avenue):
+    // 11 civilian cars bumper-to-bumper in both lanes, so the road reads
+    // FULL, not empty. Left lane x-5, right lane x+1 (the player drives at
+    // x, centre-right); the grid skips the roadblock cruiser at (x, z-42).
+    const civ = (state.cars || []).filter((c) => !c.isPolice && c.kind !== 'sports' && c.kind !== 'tank' && !c.isParked).slice(0, 11);
+    const civSpots = [
+      [player.x - 5, player.z - 24], [player.x - 5, player.z - 32],
+      [player.x - 5, player.z - 40], [player.x - 5, player.z - 48],
+      [player.x - 5, player.z - 56], [player.x - 5, player.z - 64],
+      [player.x + 1, player.z - 20], [player.x + 1, player.z - 28],
+      [player.x + 1, player.z - 36], [player.x + 1, player.z - 52],
+      [player.x + 1, player.z - 60],
+    ];
     civ.forEach((c, i) => {
       c.x = civSpots[i][0]; c.z = civSpots[i][1];
       c.angle = Math.PI; c.speed = 0;

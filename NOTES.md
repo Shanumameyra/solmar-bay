@@ -510,3 +510,23 @@ in-car bust + in-car death checks that step the world afterwards.
   hardware); the smoke burst is random per run (positions/velocities), so
   the dust cloud shape varies slightly between shots — the world state
   stays deterministic.
+
+### Hero-shot round 2 — jalan ramai + trotoar penuh (18 Nov, steer Romi)
+- **Macet bumper-to-bumper:** 11 mobil traffic di kedua lajur jalan di depan
+  pemain (lajur kiri x-5, lajur kanan x+1, jarak 8 m, dari 20 m sampai 64 m
+  di depan) — jalan di depan GT penuh sampai ke horizon, bukan lengang.
+  Ditambah 5 cruiser + tank + GT = 18 kendaraan di frame.
+- **Trotoar ramai:** 24 pejalan kaki (dari 14) — pasir + avenue + trotoar
+  barat x=-199 (7 orang) + pinggir timur x=-181 (9 orang), jarak ~6 m,
+  jadi kedua sisi jalan penuh orang, bukan 1-2 orang.
+- **Semua yang lain dipertahankan:** GT merah + spoiler + debu, tank kiri
+  bawah, 5 cruiser mengepung, heli 1,4x + beam + pool, billboard FLAMINGO
+  FM, laut + pasir, sunset jenuh, HUD padat (MISSION 7/7, MBPD 7 baris,
+  $18,450, 151 KM/H VESPERA GT, kartu Lucía).
+- **Perubahan:** hanya `game/src/shots.js` (staging hero: grid traffic
+  11 titik + daftar peds 24 titik). Tidak ada perubahan gameplay — playtest
+  tidak perlu diulang; selftest hero checks mencakup staging ini.
+- **QA (18 Nov):** selftest **85/85 PASS**; shots **PASS, 0 errors**
+  (1-hero.jpg 166,888 B, wanted=3, policeCars=6). Screenshot diverifikasi
+  visual: jalan depan penuh mobil berjejer dua lajur sampai horizon,
+  trotoar kanan penuh orang, kiri ada beberapa pejalan di tepi pantai.
