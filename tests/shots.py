@@ -1,8 +1,9 @@
 # Solmar Bay — retake the supporting screenshots (fast).
 # Run: ~/workspace/tools/pw-venv/bin/python tests/shots.py
 # Requires the static server: node serve.ts  (serves game/ on :8080)
-# Captures 2-title.jpg, 3-onfoot.jpg, 4-mission.jpg at 1600x900 JPEG q82
-# (HD); fails if a pageerror / console error appears, or if a shot exceeds
+# Captures 2-title.jpg, 3-onfoot.jpg, 4-mission.jpg at 1280x720 JPEG q82
+# (the kit gate: long side at most 1280, short side at least 480);
+# fails if a pageerror / console error appears, or if a shot exceeds
 # the 256 KiB dossier cap.
 # NOTE: 1-hero.jpg is NOT captured here — it is Romi's approved image and
 # must never be overwritten by this script.
@@ -29,7 +30,7 @@ async def main():
         browser = await p.chromium.launch(headless=True, args=[
             "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
         ])
-        page = await browser.new_page(viewport={"width": 1600, "height": 900})
+        page = await browser.new_page(viewport={"width": 1280, "height": 720})
         page.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
         page.on("console", lambda m: errs.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
         ok = True
