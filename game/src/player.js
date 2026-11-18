@@ -1,156 +1,132 @@
-// SOLMAR BAY — the player on foot. Consumes the NORMALIZED drive input
-// from world.step: { moveX, moveZ, run, lookDX, lookDY, enter, honk }.
-// WASD moves relative to the camera yaw, Shift runs, mouse look turns the
-// camera (pointer lock), E enters/exits the nearest car, H honks.
-// Angle convention (shared with Worker B): forward = (sin a, cos a);
-// angle 0 = +z (south), PI = -z (north). The player's `yaw` is the camera /
-// aim direction; `heading` is the smoothed facing used by the renderer.
-// Combat (punch / shoot / reload / weapon switch) belongs to combat.js,
-// which reads the raw input's justPressed set itself — this file never
-// touches it, so a shot is never counted twice.
-// Collision with building AABBs and cars is resolved here.
+// Solmar Bay — on-foot controller (Worker A, v2 rebuild).
+// WASD relative to the camera yaw, Shift to run, mouse look, E to
+// enter/exit (steal when parked), H to honk. While driving, the player's
+// x/z/heading sync to the car every step so the minimap, the HUD objective
+// distance and the mission triggers all track the car, not the entry point.
+
 import { CONFIG } from './config.js';
 import { collideCircle } from './city.js';
 import { enterCar, exitCar, stealCar } from './vehicle.js';
+import { scarePeds } from './traffic.js';
 
 export function createPlayer(spawn) {
-  const angle = spawn.angle !== undefined ? spawn.angle : (spawn.heading || 0);
+  const angle = spawn.angle !== undefined ? spawn.angle : Math.PI;
   return {
     x: spawn.x,
     z: spawn.z,
-    heading: angle,     // smoothed facing (same convention as yaw)
-    yaw: angle,         // camera / aim direction
-    pitch: -0.08,
+    heading: angle,
+    yaw: angle,
+    pitch: 0,
     speed: 0,
     hp: CONFIG.PLAYER.HEALTH,
     maxHp: CONFIG.PLAYER.HEALTH,
     onFoot: true,
-    inCar: false,       // B's flag (mirror of !onFoot)
-    car: null,          // car object (A's reference)
-    carId: null,        // B's reference (missions/police/combat read this)
-    weapon: 'fists',    // mirrored by combat.js each step
+    inCar: false,
+    car: null,
+    carId: null,
+    weapon: 'fists',
     ammo: 0,
     reserveAmmo: 0,
     invuln: 0,
     moving: false,
-    enterT: 0,          // door-open beat timer
+    enterT: 0,
   };
 }
 
-// One fixed step for the player. When the player is in a car, the car's own
-// step (vehicle.js, called from world.js) owns movement; this only handles
-// the E-to-exit edge here.
-export function stepPlayer(state, input, dt, world, systems = {}) {
+// drive = { moveX, moveZ, run, lookDX, lookDY, enter, honk } (from
+// world.translateInput). Combat (punch/shoot) lives in combat.js, which
+// reads the raw input; this module only moves the body.
+export function stepPlayer(state, drive, dt, world, systems) {
   const p = state.player;
-  if (p.invuln > 0) p.invuln = Math.max(0, p.invuln - dt);
+  if (p.invuln > 0) p.invuln -= dt;
+  if (p.enterT > 0) p.enterT -= dt;
 
-  // Mouse look always applies (on foot and in the car). Mouse right turns
-  // right, so yaw decreases (forward = (sin yaw, cos yaw): turning right
-  // from south (+z) faces west (-x), i.e. yaw 0 -> -PI/2).
-  if (input.lookDX || input.lookDY) {
-    p.yaw -= (input.lookDX || 0) * 0.0026;
-    p.pitch = Math.max(-1.2, Math.min(0.6, p.pitch - (input.lookDY || 0) * 0.0026));
-  }
-
+  // Driving: stay glued to the car; E steps out.
   if (!p.onFoot) {
-    // Driving: the player's map position IS the car's. Without this sync,
-    // player.x/z stays at the entry point while the car drives away, so the
-    // minimap arrow, the HUD objective distance and the mission marker
-    // distances all freeze (and the café trigger could never fire from a
-    // car). Heading follows the car too, so exiting faces the car's way.
     if (p.car) {
       p.x = p.car.x;
       p.z = p.car.z;
       p.heading = p.car.angle;
+      p.speed = p.car.speed;
+      p.yaw = p.car.angle;
     }
-    // E exits the car (with a short door beat so it cannot spam).
-    if (input.enter && p.enterT === 0) {
-      p.enterT = CONFIG.CAR.ENTER_TIME;
-      exitCar(p, world);
+    if (drive.enter && p.enterT <= 0) {
+      exitCar(state);
+      p.enterT = 0.4;
     }
-    if (p.enterT > 0) p.enterT = Math.max(0, p.enterT - dt);
     return;
   }
 
-  // ---- On foot: WASD relative to camera yaw ----
-  const mx = input.moveX || 0;
-  const mz = input.moveZ || 0;
-  const running = !!input.run;
-  const targetSpeed = (mx !== 0 || mz !== 0)
-    ? (running ? CONFIG.PLAYER.RUN_SPEED : CONFIG.PLAYER.WALK_SPEED)
-    : 0;
-  // Accelerate toward the target speed (snappy, arcade feel).
-  p.speed += (targetSpeed - p.speed) * Math.min(1, 12 * dt);
-  p.moving = p.speed > 0.3;
+  // Mouse look. Right turns right (yaw decreases).
+  p.yaw -= (drive.lookDX || 0) * 0.0026;
+  p.pitch = Math.max(-1.2, Math.min(1.2, p.pitch - (drive.lookDY || 0) * 0.0026));
 
-  if (p.speed > 0.01) {
-    // Forward = (sin yaw, cos yaw); right = (-cos yaw, sin yaw).
-    // moveZ: +1 = forward (W), moveX: +1 = right (D). W alone walks exactly
-    // along the camera yaw, so heading == yaw when walking forward.
-    const sin = Math.sin(p.yaw), cos = Math.cos(p.yaw);
-    const fx = sin * mz - cos * mx;
-    const fz = cos * mz + sin * mx;
-    const len = Math.hypot(fx, fz) || 1;
-    const nx = p.x + (fx / len) * p.speed * dt;
-    const nz = p.z + (fz / len) * p.speed * dt;
-    const resolved = collideCircle(world.city, nx, nz, CONFIG.PLAYER.RADIUS);
-    // Soft car collision: slide around parked/traffic cars. The car is an
-    // oriented box (length along its forward, width across), not a circle
-    // of radius len/2 — a circle that big blocks the player from walking
-    // alongside a long truck's door or stepping out of it.
-    let rx = resolved.x, rz = resolved.z;
-    for (const car of state.cars) {
-      const dx = rx - car.x, dz = rz - car.z;
-      const fx = Math.sin(car.angle), fz = Math.cos(car.angle);
-      const rgtx = -fz, rgtz = fx;
-      const along = dx * fx + dz * fz;       // forward axis
-      const across = dx * rgtx + dz * rgtz;  // side axis
-      const halfL = car.len / 2 + CONFIG.PLAYER.RADIUS;
-      const halfW = car.wid / 2 + CONFIG.PLAYER.RADIUS;
-      if (Math.abs(along) >= halfL || Math.abs(across) >= halfW) continue;
-      // Push out along the smaller penetration axis.
-      if (halfL - Math.abs(along) < halfW - Math.abs(across)) {
-        const s = along < 0 ? -halfL : halfL;
-        rx = car.x + fx * s + rgtx * across;
-        rz = car.z + fz * s + rgtz * across;
+  // WASD relative to yaw. Diagonals are normalised so they are not faster.
+  let mx = drive.moveX || 0;
+  let mz = drive.moveZ || 0;
+  const mLen = Math.hypot(mx, mz);
+  if (mLen > 1) {
+    mx /= mLen;
+    mz /= mLen;
+  }
+  const speed = drive.run ? CONFIG.PLAYER.RUN : CONFIG.PLAYER.WALK;
+  const fx = Math.sin(p.yaw);
+  const fz = Math.cos(p.yaw);
+  const rx = Math.cos(p.yaw);
+  const rz = -Math.sin(p.yaw);
+  const vx = (fx * mz + rx * mx) * speed;
+  const vz = (fz * mz + rz * mx) * speed;
+  p.moving = mLen > 0.1;
+  p.speed = p.moving ? speed : 0;
+  if (p.moving) p.heading = Math.atan2(vx, vz);
+
+  // Integrate, then resolve against buildings (circle) and cars (oriented
+  // box, so the player can walk along a long truck's door and step out
+  // cleanly instead of being pushed by a fat circle).
+  let nx = p.x + vx * dt;
+  let nz = p.z + vz * dt;
+  const res = collideCircle(world.city, nx, nz, 0.5);
+  nx = res.x;
+  nz = res.z;
+  for (const car of state.cars) {
+    const dx = nx - car.x;
+    const dz = nz - car.z;
+    const sin = Math.sin(car.angle);
+    const cos = Math.cos(car.angle);
+    const localU = dx * sin + dz * cos; // along the car's length
+    const localV = dx * cos - dz * sin; // across its width
+    const halfL = car.len / 2 + 0.4;
+    const halfW = car.wid / 2 + 0.4;
+    if (Math.abs(localU) < halfL && Math.abs(localV) < halfW) {
+      const penU = halfL - Math.abs(localU);
+      const penV = halfW - Math.abs(localV);
+      if (penU < penV) {
+        const s = localU >= 0 ? 1 : -1;
+        nx += sin * s * penU;
+        nz += cos * s * penU;
       } else {
-        const s = across < 0 ? -halfW : halfW;
-        rx = car.x + fx * along + rgtx * s;
-        rz = car.z + fz * along + rgtz * s;
+        const s = localV >= 0 ? 1 : -1;
+        nx += cos * s * penV;
+        nz += -sin * s * penV;
       }
     }
-    p.x = rx;
-    p.z = rz;
-    // Face the movement direction (smooth turn). Angle = atan2(dx, dz).
-    const wantHeading = Math.atan2(fx, fz);
-    let diff = wantHeading - p.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    p.heading += diff * Math.min(1, 14 * dt);
   }
+  p.x = nx;
+  p.z = nz;
 
-  // ---- E: enter / steal the nearest car ----
-  if (input.enter && p.enterT === 0) {
+  // E: enter the nearest car (steal it if it is parked).
+  if (drive.enter && p.enterT <= 0) {
     const car = world.nearestCar(p.x, p.z, CONFIG.PLAYER.ENTER_RANGE);
     if (car) {
-      p.enterT = CONFIG.CAR.ENTER_TIME;
-      if (car.isParked) stealCar(p, car, world);
-      else enterCar(p, car, world);
+      if (car.isParked) stealCar(state, car, world, systems);
+      else enterCar(state, car);
+      p.enterT = 0.4;
     }
   }
-  if (p.enterT > 0) p.enterT = Math.max(0, p.enterT - dt);
 
-  // ---- H: honk (scares nearby peds) ----
-  if (input.honk) {
-    for (const ped of state.peds) {
-      const dx = ped.x - p.x, dz = ped.z - p.z;
-      if (dx * dx + dz * dz < 12 * 12) {
-        ped.flee = 2;
-        ped.fleeFrom = { x: p.x, z: p.z };
-        ped.state = 'flee';
-        ped.fleeT = 2;
-      }
-    }
-    state.events.push({ type: 'sfx', text: 'honk', t: state.time });
+  // H: honk — nearby pedestrians flee.
+  if (drive.honk) {
+    scarePeds(state, p.x, p.z, 25);
+    state.events.push({ type: 'honk', x: p.x, z: p.z });
   }
 }
