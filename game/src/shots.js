@@ -59,6 +59,14 @@ function placePeds(state, spots) {
     ped.angle = Math.PI / 2;
     placed += 1;
   }
+  // Park the rest far from the frame (Top 5: no pedestrian crowd —
+  // only a few small background figures). Only x/z move; loops stay
+  // intact (stepPed reads ped.loop every step — never null it).
+  for (let i = placed; i < peds.length; i += 1) {
+    const ped = peds[i];
+    ped.x = 150 + (i % 5) * 3;
+    ped.z = 150 + Math.floor(i / 5) * 3;
+  }
   return placed;
 }
 
@@ -93,17 +101,18 @@ function stageShotInner(name, world, systems, state) {
 
   if (name === 'hero') {
     // THE hero shot (the only screenshot): the PINK Vespera GT driving
-    // SOUTH down the beach boulevard at sunset — the #1 entry's exact
-    // composition (HALCYON KEYS 3D). Driving south puts the peach/salmon
-    // beachfront buildings on the LEFT, the red palms + FLAMINGO FM
-    // billboard + sea on the RIGHT, and the sun at the end of the road,
-    // dead centre, low on the horizon. Rear 3/4 chase cam (state.heroCam),
-    // hero HUD (state.heroHud). The car hugs the shore (x=-190, on the
-    // street at x=-192, 10 m from the shoreline at x=-200). Heading 0 =
-    // +z (south) under the (sin, cos) convention. Romi's correction: the
-    // tank, the traffic jam and the pedestrians STAY (the road stays busy)
-    // — only the #1 entry's look is copied (pink GT, sun at the end of
-    // the road, flankers, far heli, billboard, peach buildings, HUD).
+    // SOUTH down the beach boulevard at sunset — the TOP 5 formula
+    // (Romi's final order, 18 Nov): NO tank, NO traffic jam — the road
+    // ahead is OPEN, only 2-3 small cars far near the sun; pedestrians
+    // only a few small background figures. Driving south puts the
+    // peach/salmon beachfront buildings on the LEFT, the red palms +
+    // FLAMINGO FM billboard + sea on the RIGHT, and the sun at the end
+    // of the road, dead centre, low on the horizon. Rear 3/4 chase cam
+    // (state.heroCam), hero HUD (state.heroHud). The car hugs the shore
+    // (x=-190, on the street at x=-192, 10 m from the shoreline at
+    // x=-200). Heading 0 = +z (south) under the (sin, cos) convention.
+    // Police: 2 flankers very close + 1 at 21 m + 2 roadblocks at 43 m
+    // (the action: a roadblock ahead). Heli far ahead with its beam.
     const car = firstCar(state, 'sports') || firstCar(state);
     if (car) world.teleport(-190, -60, 0, car);
     state.heroCam = true;
@@ -111,10 +120,10 @@ function stageShotInner(name, world, systems, state) {
       missionTitle: '<span class="m-id">CH 5</span>PAPER MOON',
       timer: '2:06',
       cash: '$38,420',
-      clock: 'DAY 1 18:52',
+      clock: 'DAY 1 18:47',
       starsHtml: '<span style="color:#ffd23d">★★★★</span><span style="color:#8a8a92">★</span>',
       insight: 'IN SIGHT',
-      objective: 'Lose the HKPD — reach the safehouse',
+      objective: 'Lose the cops — reach the safehouse',
       stageLabel: 'STAGE 3/4',
       stagePct: 75,
       next: 'Reach the safehouse',
@@ -132,7 +141,7 @@ function stageShotInner(name, world, systems, state) {
         { name: 'IBIS-43', dist: '5 m', status: 'RAMMING' },
         { name: 'TARPON-10', dist: '9 m', status: 'RAMMING' },
         { name: 'HERON-17', dist: '21 m', status: 'PURSUIT' },
-        { name: 'KESTREL-31', dist: '43 m', status: 'ROADBLOCK' },
+        { name: 'KESTREL-31', dist: '43 m', status: 'BOXING IN' },
         { name: 'MARLIN-26', dist: '43 m', status: 'ROADBLOCK' },
       ],
       dialogue: {
@@ -164,28 +173,17 @@ function stageShotInner(name, world, systems, state) {
         c.angle = Math.PI;
         c.speed = 22;
       });
-      // Crowd: 24 pedestrians — sand + avenue + BOTH roadsides of the
-      // street (west sidewalk x=-199, east roadside x=-181), so the
-      // sidewalks read crowded, not empty. (Romi's correction: the crowd
-      // STAYS — the example's empty sidewalks do NOT apply here.)
+      // Background figures only (Top 5: NO crowd): 5 small pedestrians
+      // far ahead on the beach + the avenue sidewalk, 40-90 m away — they
+      // read as tiny figures in the background, not a crowd. The rest of
+      // the peds are parked far away by placePeds.
       placePeds(state, [
-        [-185, -14], [-185, -4], [-184, 16],
-        [-153, -28], [-152, 8], [-155, 26], [-137, -12], [-137, 12],
-        [-199, -28], [-199, -20], [-199, -14], [-199, -8], [-199, -2], [-199, 4], [-199, 10],
-        [-181, -28], [-181, -24], [-181, -18], [-181, -12], [-181, -6], [-181, 0], [-181, 6], [-181, 12], [-181, 18],
+        [-185, 45], [-184, 62], [-186, 80],
+        [-153, 55], [-137, 72],
       ]);
-      // Tank: it rumbles in 40 m north (behind, since the player drives
-      // south), facing SOUTH (toward the player, angle 0) so it closes in
-      // head-on — the pursuit turns it around too slowly otherwise. The
+      // NO tank (Top 5: the tank is removed — the top 5 entries have
+      // none). Wanted is 3, so police.step never spawns one either. The
       // heli (wanted 3+) hovers far ahead with its spotlight beam.
-      // (Romi's correction: the tank STAYS — it is NOT removed.)
-      const tank = systems.police.spawnTank(state, player);
-      if (tank) {
-        tank.x = player.x + 4;
-        tank.z = player.z - 40;
-        tank.angle = 0;
-        tank.speed = 0;
-      }
     }
     stepWorld(world, systems, fakeInput(['KeyW']), 120);
     // Frame the pursuit for the camera (rear 3/4, 6.5 m back, low): the
@@ -216,44 +214,15 @@ function stageShotInner(name, world, systems, state) {
       cops[4].x = player.x - 2; cops[4].z = player.z + 43;
       cops[4].angle = Math.PI; cops[4].speed = 0; // MARLIN-26, roadblock
     }
-    // Traffic JAM on the street ahead of the player: 11 civilian cars
-    // bumper-to-bumper in both lanes, so the road reads FULL, not empty.
-    // (Romi's correction: the jam STAYS.) Left lane x-6, right lane x+1;
-    // the grid dodges the flankers (+5/+8), the 21 m cruiser and the
-    // roadblocks at +43. Plus 3 small cars far ahead near the sun.
+    // Open road ahead (Top 5: NO traffic jam): only 3 small cars far
+    // ahead near the sun — live traffic, not a jam. The roadblocks at
+    // +43 m are the action (a roadblock ahead), not a queue.
     const civ = (state.cars || []).filter((c) => !c.isPolice && c.kind !== 'sports' && c.kind !== 'tank' && !c.isParked);
-    const jamSpots = [
-      [player.x - 6, player.z + 14], [player.x - 6, player.z + 22],
-      [player.x - 6, player.z + 30], [player.x - 6, player.z + 38],
-      [player.x - 6, player.z + 46], [player.x - 6, player.z + 54],
-      [player.x + 1, player.z + 18], [player.x + 1, player.z + 26],
-      [player.x + 1, player.z + 34], [player.x + 1, player.z + 50],
-      [player.x + 1, player.z + 58],
-    ];
-    civ.slice(0, 11).forEach((c, i) => {
-      c.x = jamSpots[i][0]; c.z = jamSpots[i][1];
-      c.angle = 0; c.speed = 0;
-    });
     const farSpots = [[player.x - 2, player.z + 70], [player.x + 3, player.z + 85], [player.x - 1, player.z + 100]];
-    civ.slice(11, 14).forEach((c, i) => {
+    civ.slice(0, 3).forEach((c, i) => {
       c.x = farSpots[i][0]; c.z = farSpots[i][1];
       c.angle = 0; c.speed = 0;
     });
-    // Tank, LEFT of the frame (east — the frame's left when driving
-    // south): close beside the GT, cannon toward the camera. It must NOT
-    // sit at (x-4, z-3) — the low close chase cam sits there, so a tank
-    // there fills the lens and blocks the road + speedo. Nor at (x+5,
-    // z-2): that is 46° off the view axis, past the frame's left edge, so
-    // the tank is cropped and its cannon points out of frame. At (x+5,
-    // z+2) it is 29° left of axis, 12 m from the camera — large, whole,
-    // and clear of the GT (5.4 m) and the right flanker (2.4 m). Angled
-    // ~50° off north so the cannon reads in profile instead of pointing
-    // straight at the lens (foreshortened onto the hull).
-    const tank = (state.cars || []).find((c) => c.kind === 'tank');
-    if (tank) {
-      tank.x = player.x + 5; tank.z = player.z + 2;
-      tank.angle = Math.PI - 0.9; tank.speed = 0; // cannon toward the camera
-    }
     // Dust / motion: a smoke puff at the GT's rear wheels (the car drives
     // south, so the trail sits north). Drained by main.js on the next
     // frame, mid-life (~0.4 s of 1.1 s) at screenshot time — reads as

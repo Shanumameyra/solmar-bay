@@ -652,3 +652,43 @@ in-car bust + in-car death checks that step the world afterwards.
 - **Notes:** draw-call naik ~10 (cornice + penthouse + kolam + detail GT)
   di atas budget lunak 60 (tidak ada test yang meng-assert); fps playtest
   tetap 4-7 di SwiftShader.
+
+## Round 5 — formula Top 5 (18 Nov ~10:22 WIB): tank + macet DIHAPUS (perintah final Romi)
+- **Keputusan final Romi:** ikuti formula Top 5 — tank dan macet total
+  DIHAPUS dari hero (top 5 tidak memakai keduanya). Koreksi sebelumnya
+  ("tank + macet + orang TETAP") dibatalkan oleh perintah ini.
+- **Staging hero (shots.js):** spawnTank + reposisi tank pasca-sim DIHAPUS
+  (tidak ada tank di frame; wanted 3 juga tidak memicu spawn tank di
+  police.step); macet 11 mobil DIHAPUS (jalan depan TERBUKA — hanya 3
+  mobil kecil jauh dekat matahari di +70/+85/+100); pejalan kaki 24
+  kerumunan DIHAPUS — hanya 5 figur kecil di latar (pasir + trotoar
+  avenue, 40-90 m di depan, kecil di frame); sisa peds diparkir jauh
+  ke (150,150) — hanya x/z yang dipindah, loop tetap utuh (stepPed
+  membaca ped.loop tiap step, jangan di-null-kan).
+- **Tetap dipertahankan:** 5 cruiser (2 flanker SANGAT DEKAT 5 m/9 m
+  mengapit + 1 di 21 m + 2 roadblock berdampingan di 43 m — aksi:
+  roadblock di depan), heli kecil jauh + beam, GT pink besar di
+  sepertiga bawah, billboard FLAMINGO FM terhalang palem merah, VALE,
+  debu drift di belakang GT, kamera chase rendah-dekat, jalan basah
+  + streak matahari, HUD lengkap.
+- **HUD (heroHud):** objective "Lose the cops — reach the safehouse"
+  (sesuai formula), jam "DAY 1 18:47" (dalam rentang sunset 17:30-18:50),
+  KESTREL-31 status "BOXING IN" (panel kini RAMMING/RAMMING/PURSUIT/
+  BOXING IN/ROADBLOCK, judul "HKPD RESPONSE — 7 UNITS CODE 4"); sisanya
+  tetap (CH 5 PAPER MOON, 2:06, STAGE 3/4, $38,420, 4+1 bintang,
+  IN SIGHT, WASP SMG, CORAL STRAND, Juno Reyes, WAVE 88.1, 151 KM/H,
+  VESPERA GT, CONDITION 100%, GEAR 04).
+- **Tests:** selftest hero checks diperbarui ("5 cruisers, no tank"
+  === 5; "a few background pedestrians" >= 3 dalam 100 m); shots.py
+  staging checks diperbarui (bgPeds >= 3, police == 5). Tank TETAP ADA
+  di game normal (spawn di wanted >= 4 via police.step) — yang dihapus
+  hanya staging hero; gameplay tidak diubah.
+- **QA (18 Nov):** selftest **85/85 PASS**; shots **PASS, 0 errors**
+  (1-hero.jpg 174.615 B, wanted=3, policeCars=5); playtest **PASS,
+  0 errors** (playtest8: boot fps=7, jalan 3,4 m, masuk mobil, nyetir
+  18,2 m/s / 14,0 m, keluar 1,6 m, wanted 3, misi "Drive to the docks",
+  HUD + minimap OK, fps=5). Screenshot diverifikasi visual: komposisi
+  kini bersih sesuai Top 5 — GT pink ~28% lebar frame di tengah-bawah,
+  2 cruiser putih mengapit dekat, roadblock di depan, jalan terbuka
+  sampai matahari, heli + beam di tengah-atas, trotoar kosong di dekat
+  kamera, figur kecil di kejauhan, HUD lengkap tanpa menutupi mobil.

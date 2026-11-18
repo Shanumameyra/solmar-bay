@@ -590,10 +590,10 @@ console.log('== Finisher polish (18 Nov) ==');
     const info = stageShot('hero', w7, sys7);
     const car = w7.state.player.car;
     check('Hero car drives on the beach (x < -168)', !!car && car.x < -168, car ? `x=${car.x.toFixed(0)}` : 'no car');
-    const nearPeds = (w7.state.peds || []).filter((p) => car && Math.hypot(p.x - car.x, p.z - car.z) < 40).length;
-    check('Hero has pedestrians near the frame', nearPeds >= 2, nearPeds + ' peds within 40 m');
+    const bgPeds = (w7.state.peds || []).filter((p) => car && Math.hypot(p.x - car.x, p.z - car.z) < 100).length;
+    check('Hero has a few background pedestrians', bgPeds >= 3, bgPeds + ' peds within 100 m');
     check('Hero runs at 3 stars', info.wanted === 3, 'wanted=' + info.wanted);
-    check('Hero has 5 cruisers + tank', info.policeCars >= 6, info.policeCars + ' police cars');
+    check('Hero has 5 cruisers, no tank', info.policeCars === 5, info.policeCars + ' police cars');
     check('Hero HUD override is staged', !!w7.state.heroHud && w7.state.heroHud.carName === 'VESPERA GT',
       w7.state.heroHud ? w7.state.heroHud.carName : 'no heroHud');
     check('Hero camera is staged', w7.state.heroCam === true);

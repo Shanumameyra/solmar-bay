@@ -48,25 +48,25 @@ async def main():
                   f"money=${gta.get('money')} mission={gta.get('mission')!r} "
                   f"policeCars={gta.get('policeCars')}")
             # Staging checks: the hero must drive on the beach (sea in
-            # frame) at 3 stars, with pedestrians near it, the traffic jam
-            # ahead and 5 cruisers + tank on its tail.
+            # frame) at 3 stars, with a few background pedestrians, an
+            # open road ahead (no jam, no tank) and 5 cruisers on its tail.
             if name == "hero":
                 st = await page.evaluate("""() => {
                     const s = window.__GTA.state;
                     const car = s.player.car;
-                    const near = (s.peds || []).filter(p => car && Math.hypot(p.x - car.x, p.z - car.z) < 40).length;
+                    const bg = (s.peds || []).filter(p => car && Math.hypot(p.x - car.x, p.z - car.z) < 100).length;
                     const police = (s.cars || []).filter(c => c.isPolice).length;
-                    return { carX: car ? car.x : null, nearPeds: near, wanted: s.wanted,
+                    return { carX: car ? car.x : null, bgPeds: bg, wanted: s.wanted,
                              police, heroHud: !!s.heroHud, heroCam: !!s.heroCam };
                 }""")
                 if st["carX"] is None or st["carX"] >= -168:
                     print(f"  !! hero car is not on the beach (x={st['carX']})"); ok = False
-                if st["nearPeds"] < 2:
-                    print(f"  !! hero has only {st['nearPeds']} peds near the frame"); ok = False
+                if st["bgPeds"] < 3:
+                    print(f"  !! hero has only {st['bgPeds']} background peds"); ok = False
                 if st["wanted"] != 3:
                     print(f"  !! hero wanted is {st['wanted']}, expected 3"); ok = False
-                if st["police"] != 6:
-                    print(f"  !! hero has {st['police']} police units, expected 6 (5 cruisers + tank)"); ok = False
+                if st["police"] != 5:
+                    print(f"  !! hero has {st['police']} police units, expected 5 (cruisers, no tank)"); ok = False
                 if not st["heroHud"] or not st["heroCam"]:
                     print(f"  !! hero staging flags missing (hud={st['heroHud']} cam={st['heroCam']})"); ok = False
         await browser.close()
