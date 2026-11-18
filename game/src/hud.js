@@ -1,312 +1,165 @@
-// hud.js — Solmar Bay HUD + menus (DOM overlay).
-// Per DESIGN.md:
-//   Top-left: cash ($), wanted stars (lit = active, flashing when police near)
-//   Top-right: minimap (160x160 canvas, owned by minimap.js, mounted here)
-//   Bottom-left: health bar + weapon + ammo
-//   Bottom-center: objective line + distance to marker (+ Rosa dialogue)
-//   Bottom-right: speed (km/h) + clock 17:40
-//   Message feed (top-center, fades)
-//   Title screen: SOLMAR BAY logo, "Press Enter", controls, Continue (if a
-//   save exists), story blurb, best stats
-//   Pause (Esc): resume / restart / mute / save + quit to title
-//   Busted/Wasted screens: 2 s, then respawn (main.js drives the timer)
-//
-// The module builds its own DOM (no HTML dependency beyond a <div id="hud">)
-// and is a safe no-op stub when there is no document (Node tests).
-// Buttons call back into main.js through G.startGame / G.continueGame /
-// G.resumeGame / G.restartGame / G.quitToTitle / G.toggleMute.
+// hud.js — Solmar Bay HUD (Worker B, v6 fresh)
+// Contract: createHud(G) / updateHud(G)
+// DOM ids (from index.html): #cash #stars #health-bar #health-fill #weapon #ammo
+// #objective #distance #speed #clock #minimap #feed #title-screen #pause-screen
+// #busted-screen #wasted-screen #mission-toast. Missing nodes are created
+// defensively so the HUD works even if index.html is minimal.
 
-function stubHUD() {
-  return {
-    toast() {},
-    setObjective() {},
-    setDialogue() {},
-    setWeapon() {},
-    showTitle() {},
-    hideTitle() {},
-    showPause() {},
-    hidePause() {},
-    showBusted() {},
-    showWasted() {},
-    hideOverlays() {},
-    update() {},
-    minimapWrap: null,
-  };
+const IDS = ['cash', 'stars', 'health-bar', 'health-fill', 'weapon', 'ammo',
+  'objective', 'distance', 'speed', 'clock', 'minimap', 'feed',
+  'title-screen', 'pause-screen', 'busted-screen', 'wasted-screen', 'mission-toast'];
+
+function el(tag, id, text) {
+  const n = document.createElement(tag);
+  if (id) n.id = id;
+  if (text !== undefined) n.textContent = text;
+  return n;
 }
 
-export function createHUD(G) {
-  if (typeof document === 'undefined') return stubHUD();
-
-  const root = document.getElementById('hud') || document.body;
-  const el = (tag, id, cls, parent) => {
-    const n = document.createElement(tag);
-    if (id) n.id = id;
-    if (cls) n.className = cls;
-    (parent || root).appendChild(n);
-    return n;
-  };
-
-  // --- top-left: cash + stars ---
-  const topLeft = el('div', 'hud-topleft', 'hud-corner');
-  const cashEl = el('div', 'hud-cash', 'hud-cash', topLeft);
-  const starsEl = el('div', 'hud-stars', 'hud-stars', topLeft);
-
-  // --- top-right: minimap mount point ---
-  const minimapWrap = el('div', 'minimap-wrap', 'hud-minimap');
-
-  // --- bottom-left: health + weapon ---
-  const bottomLeft = el('div', 'hud-bottomleft', 'hud-corner');
-  const healthWrap = el('div', 'hud-health-wrap', '', bottomLeft);
-  const healthBar = el('div', 'hud-health-bar', '', healthWrap);
-  const healthText = el('div', 'hud-health-text', '', bottomLeft);
-  const weaponEl = el('div', 'hud-weapon', '', bottomLeft);
-
-  // --- bottom-center: dialogue + objective ---
-  const bottomCenter = el('div', 'hud-bottomcenter', 'hud-corner');
-  const dialogueEl = el('div', 'hud-dialogue', '', bottomCenter);
-  const objectiveEl = el('div', 'hud-objective', '', bottomCenter);
-  const distanceEl = el('div', 'hud-distance', '', bottomCenter);
-
-  // --- bottom-right: speed + clock ---
-  const bottomRight = el('div', 'hud-bottomright', 'hud-corner');
-  const speedEl = el('div', 'hud-speed', '', bottomRight);
-  const clockEl = el('div', 'hud-clock', '', bottomRight);
-
-  // --- top-center: message feed ---
-  const feedEl = el('div', 'hud-feed', '', root);
-
-  // --- overlays ---
-  const titleEl = el('div', 'title-screen', 'overlay');
-  const titleInner = el('div', 'title-inner', '', titleEl);
-  const logoEl = el('div', 'title-logo', '', titleInner);
-  logoEl.textContent = 'SOLMAR BAY';
-  const tagEl = el('div', 'title-tag', '', titleInner);
-  tagEl.textContent = 'Steal cars. Dodge the cops. Run jobs for Mama Rosa.';
-  const pressEl = el('div', 'title-press', '', titleInner);
-  pressEl.textContent = '— Press Enter —';
-  const startBtn = el('button', 'title-start', 'title-btn', titleInner);
-  startBtn.textContent = '▶ Start Game';
-  const continueBtn = el('button', 'title-continue', 'title-btn', titleInner);
-  continueBtn.textContent = '↻ Continue';
-  const controlsEl = el('div', 'title-controls', '', titleInner);
-  controlsEl.innerHTML =
-    'WASD drive / walk &nbsp;·&nbsp; Shift run / handbrake<br>' +
-    'E enter / steal car &nbsp;·&nbsp; F punch &nbsp;·&nbsp; Click shoot<br>' +
-    'R reload &nbsp;·&nbsp; 1 fists / 2 pistol &nbsp;·&nbsp; H honk<br>' +
-    'M mute &nbsp;·&nbsp; Esc / P pause';
-  const blurbEl = el('div', 'title-blurb', '', titleInner);
-  blurbEl.textContent =
-    'Dario "D" Cruz owes money to the wrong people. One fixer, one city, ' +
-    'one last shot at getting out clean.';
-  const statsEl = el('div', 'title-stats', '', titleInner);
-
-  const pauseEl = el('div', 'pause-screen', 'overlay hidden');
-  const pauseInner = el('div', 'pause-inner', '', pauseEl);
-  const pauseTitle = el('div', 'pause-title', '', pauseInner);
-  pauseTitle.textContent = 'PAUSED';
-  const resumeBtn = el('button', 'pause-resume', 'title-btn', pauseInner);
-  resumeBtn.textContent = '▶ Resume';
-  const restartBtn = el('button', 'pause-restart', 'title-btn', pauseInner);
-  restartBtn.textContent = '↻ Restart Mission';
-  const muteBtn = el('button', 'pause-mute', 'title-btn', pauseInner);
-  muteBtn.textContent = '♪ Mute / Unmute (M)';
-  const saveQuitBtn = el('button', 'pause-savequit', 'title-btn', pauseInner);
-  saveQuitBtn.textContent = '■ Save & Quit to Title';
-
-  const bustedEl = el('div', 'busted-screen', 'overlay hidden');
-  const bustedText = el('div', 'busted-text', '', bustedEl);
-  bustedText.textContent = 'BUSTED';
-  const bustedSub = el('div', 'busted-sub', '', bustedEl);
-
-  const wastedEl = el('div', 'wasted-screen', 'overlay hidden');
-  const wastedText = el('div', 'wasted-text', '', wastedEl);
-  wastedText.textContent = 'WASTED';
-  const wastedSub = el('div', 'wasted-sub', '', wastedEl);
-
-  // --- button wiring (callbacks live on G, owned by main.js) ---
-  function call(name) {
-    if (G && typeof G[name] === 'function') {
-      try {
-        G[name]();
-      } catch (_err) { /* main.js owns the error surface */ }
+export function createHud(G) {
+  const doc = (typeof document !== 'undefined') ? document : null;
+  const els = {};
+  if (doc) {
+    let root = doc.getElementById('hud');
+    if (!root) {
+      root = el('div', 'hud');
+      root.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:10;font-family:system-ui,sans-serif;color:#fff;';
+      doc.body.appendChild(root);
     }
+    for (const id of IDS) {
+      let n = doc.getElementById(id);
+      if (!n) {
+        if (id === 'minimap') { n = el('canvas', id); n.width = 160; n.height = 160; }
+        else if (id === 'health-bar') { n = el('div', id); n.appendChild(el('div', 'health-fill')); }
+        else if (id.endsWith('-screen')) { n = el('div', id); n.style.display = 'none'; }
+        else n = el('div', id);
+        // Sensible default placement for auto-created nodes.
+        if (id === 'cash' || id === 'stars') n.style.cssText = 'position:absolute;top:12px;left:14px;font-weight:700;font-size:20px;text-shadow:0 1px 3px #000;';
+        if (id === 'stars') n.style.top = '38px';
+        if (id === 'health-bar') n.style.cssText = 'position:absolute;left:14px;bottom:64px;width:180px;height:14px;background:#0008;border:1px solid #fff6;border-radius:7px;overflow:hidden;';
+        if (id === 'weapon' || id === 'ammo') n.style.cssText = 'position:absolute;left:14px;bottom:36px;font-weight:600;text-shadow:0 1px 3px #000;';
+        if (id === 'ammo') n.style.left = '90px';
+        if (id === 'objective') n.style.cssText = 'position:absolute;left:50%;transform:translateX(-50%);bottom:56px;font-weight:600;text-shadow:0 1px 3px #000;';
+        if (id === 'distance') n.style.cssText = 'position:absolute;left:50%;transform:translateX(-50%);bottom:34px;text-shadow:0 1px 3px #000;';
+        if (id === 'speed') n.style.cssText = 'position:absolute;right:16px;bottom:36px;font-size:26px;font-weight:800;text-shadow:0 1px 3px #000;';
+        if (id === 'clock') n.style.cssText = 'position:absolute;right:16px;bottom:12px;font-weight:600;text-shadow:0 1px 3px #000;';
+        if (id === 'minimap') n.style.cssText = 'position:absolute;top:12px;right:14px;border:2px solid #fff5;border-radius:8px;background:#0a1420;';
+        if (id === 'feed') n.style.cssText = 'position:absolute;top:12px;left:50%;transform:translateX(-50%);text-align:center;font-weight:600;text-shadow:0 1px 3px #000;';
+        if (id === 'mission-toast') n.style.cssText = 'position:absolute;top:38%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:28px;font-weight:800;text-shadow:0 2px 6px #000;display:none;';
+        if (id.endsWith('-screen')) n.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:#000a;text-align:center;';
+        root.appendChild(n);
+      }
+      els[id] = n;
+    }
+    // Title screen content (only fill it if it was empty).
+    const ts = els['title-screen'];
+    if (ts && !ts.textContent.trim()) {
+      ts.innerHTML = '<h1 style="font-size:64px;margin:0;letter-spacing:4px;">SOLMAR BAY</h1>'
+        + '<p>A getaway driver. A fixer named Rosa. A city that never sleeps.</p>'
+        + '<p><b>Press Enter to start</b></p>'
+        + '<p style="font-size:13px;opacity:.85;">WASD move / drive &nbsp;·&nbsp; Shift run / handbrake &nbsp;·&nbsp; E enter car &nbsp;·&nbsp; F punch<br>'
+        + 'Click shoot &nbsp;·&nbsp; R reload &nbsp;·&nbsp; 1/2 weapons &nbsp;·&nbsp; H honk &nbsp;·&nbsp; M mute &nbsp;·&nbsp; Esc pause</p>';
+    }
+    const bs = els['busted-screen'];
+    if (bs && !bs.textContent.trim()) bs.innerHTML = '<h1 style="font-size:56px;">BUSTED</h1><p>The SBPD let you off at the precinct.</p>';
+    const ws = els['wasted-screen'];
+    if (ws && !ws.textContent.trim()) ws.innerHTML = '<h1 style="font-size:56px;">WASTED</h1><p>You wake up at the hospital.</p>';
+    const ps = els['pause-screen'];
+    if (ps && !ps.textContent.trim()) ps.innerHTML = '<h1>PAUSED</h1><p>Esc / P to resume</p>';
   }
-  startBtn.addEventListener('click', () => call('startGame'));
-  continueBtn.addEventListener('click', () => call('continueGame'));
-  resumeBtn.addEventListener('click', () => call('resumeGame'));
-  restartBtn.addEventListener('click', () => call('restartMission'));
-  muteBtn.addEventListener('click', () => call('toggleMute'));
-  saveQuitBtn.addEventListener('click', () => call('quitToTitle'));
 
-  // --- state caches (avoid DOM writes when nothing changed) ---
-  let lastCash = null;
-  let lastStars = null;
-  let lastHealth = null;
-  let lastWeapon = null;
-  let lastSpeed = null;
-  let lastObjective = null;
-  let lastDistance = null;
-  let lastDialogue = null;
-  let lastClock = null;
-  let dialogueTimer = 0;
-  let clockMinutes = 17 * 60 + 40; // fixed golden hour 17:40, drifts slowly
-
-  function starString(wanted) {
-    let s = '';
-    for (let i = 1; i <= 5; i++) s += i <= wanted ? '★' : '☆';
-    return s;
-  }
-
-  const api = {
-    minimapWrap,
-
-    toast(msg, kind) {
-      if (!msg) return;
-      const item = document.createElement('div');
-      item.className = `feed-item feed-${kind || 'info'}`;
-      item.textContent = msg;
-      feedEl.appendChild(item);
-      while (feedEl.children.length > 5) feedEl.removeChild(feedEl.firstChild);
-      setTimeout(() => {
-        item.classList.add('feed-fade');
-        setTimeout(() => {
-          if (item.parentNode === feedEl) feedEl.removeChild(item);
-        }, 800);
-      }, 3600);
+  const hud = {
+    els,
+    _feed: [],       // {text, t}
+    _toastTimer: 0,
+    _feedTimer: 0,
+    say(text) {
+      if (!text) return;
+      this._feed.push({ text, t: 4.0 });
+      if (this._feed.length > 4) this._feed.shift();
+      this._feedTimer = 0.1;
     },
-
-    setObjective(text, distance, secondsLeft) {
-      const t = text || '';
-      const d = typeof distance === 'number' ? `${Math.round(distance)} m` : '';
-      const timer = typeof secondsLeft === 'number' ? `  ·  ${Math.ceil(secondsLeft)}s` : '';
-      if (t !== lastObjective) {
-        objectiveEl.textContent = t;
-        lastObjective = t;
-      }
-      const distText = d + timer;
-      if (distText !== lastDistance) {
-        distanceEl.textContent = distText;
-        lastDistance = distText;
-      }
-    },
-
-    setDialogue(line) {
-      if (!line) return;
-      if (line !== lastDialogue) {
-        dialogueEl.textContent = `Rosa: "${line}"`;
-        dialogueEl.classList.add('show');
-        lastDialogue = line;
-      }
-      dialogueTimer = 6; // seconds on screen
-    },
-
-    setWeapon(weapon) {
-      if (G) G.weapon = weapon;
-      lastWeapon = null; // force refresh
-    },
-
-    showTitle() {
-      titleEl.classList.remove('hidden');
-      pauseEl.classList.add('hidden');
-      bustedEl.classList.add('hidden');
-      wastedEl.classList.add('hidden');
-      const has = G && G.save ? G.save.hasSave() : false;
-      continueBtn.style.display = has ? '' : 'none';
-      const data = G && G.save ? G.save.peek() : null;
-      if (data) {
-        statsEl.textContent =
-          `Best cash $${data.stats.bestCash}  ·  Missions done ${data.stats.missionsDone}  ·  ` +
-          `Cars stolen ${data.stats.carsStolen}  ·  Busted ${data.stats.busted}`;
-      } else {
-        statsEl.textContent = 'No save yet — a fresh start in Solmar Bay.';
-      }
-      pressEl.classList.add('blink');
-    },
-
-    hideTitle() {
-      titleEl.classList.add('hidden');
-    },
-
-    showPause() {
-      pauseEl.classList.remove('hidden');
-      muteBtn.textContent = G && G.muted ? '♪ Unmute (M)' : '♪ Mute (M)';
-    },
-
-    hidePause() {
-      pauseEl.classList.add('hidden');
-    },
-
-    showBusted(lost) {
-      bustedEl.classList.remove('hidden');
-      bustedSub.textContent = lost > 0 ? `You lost $${lost} — respawning at the precinct…` : 'Respawning at the precinct…';
-    },
-
-    showWasted(lost) {
-      wastedEl.classList.remove('hidden');
-      wastedSub.textContent = lost > 0 ? `You lost $${lost} — respawning at the hospital…` : 'Respawning at the hospital…';
-    },
-
-    hideOverlays() {
-      bustedEl.classList.add('hidden');
-      wastedEl.classList.add('hidden');
-      pauseEl.classList.add('hidden');
-    },
-
-    update(dt) {
-      const step = dt || 0.016;
-      if (!G) return;
-      const money = Math.floor(G.money || 0);
-      if (money !== lastCash) {
-        cashEl.textContent = `$${money.toLocaleString('en-US')}`;
-        lastCash = money;
-      }
-      const wanted = G.wanted || 0;
-      if (wanted !== lastStars) {
-        starsEl.textContent = starString(wanted);
-        starsEl.className = `hud-stars stars-${wanted}`;
-        lastStars = wanted;
-      }
-      // Flash the stars when police are close.
-      if (G.police && typeof G.police.nearestDist === 'function') {
-        const near = G.police.nearestDist();
-        starsEl.classList.toggle('flashing', wanted > 0 && near < 25);
-      }
-      const health = Math.max(0, Math.round(G.health || 0));
-      if (health !== lastHealth) {
-        healthBar.style.width = `${health}%`;
-        healthBar.className = `hud-health-bar ${health < 30 ? 'low' : health < 60 ? 'mid' : ''}`;
-        healthText.textContent = `HP ${health}`;
-        lastHealth = health;
-      }
-      const weapon = G.weapon || 'fists';
-      const ammo = weapon === 'pistol'
-        ? `${G.ammo || 0} / ${G.reserveAmmo || 0}`
-        : '—';
-      const weaponText = weapon === 'pistol' ? `Pistol  ${ammo}` : 'Fists';
-      if (weaponText !== lastWeapon) {
-        weaponEl.textContent = weaponText;
-        lastWeapon = weaponText;
-      }
-      const speed = Math.round((typeof G.getPlayerSpeed === 'function' ? G.getPlayerSpeed() : 0) * 3.6);
-      if (speed !== lastSpeed) {
-        speedEl.textContent = `${speed} km/h`;
-        lastSpeed = speed;
-      }
-      // Clock drifts 1 game-minute per ~5 real seconds from 17:40.
-      if (G.state === 'playing') clockMinutes += step / 5;
-      const hh = Math.floor(clockMinutes / 60) % 24;
-      const mm = Math.floor(clockMinutes % 60);
-      const clockText = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-      if (clockText !== lastClock) {
-        clockEl.textContent = clockText;
-        lastClock = clockText;
-      }
-      if (dialogueTimer > 0) {
-        dialogueTimer -= step;
-        if (dialogueTimer <= 0) dialogueEl.classList.remove('show');
-      }
+    toast(title, sub) {
+      const n = this.els['mission-toast'];
+      if (!n) return;
+      n.innerHTML = '<div>' + title + '</div>' + (sub ? '<div style="font-size:18px;">' + sub + '</div>' : '');
+      n.style.display = 'block';
+      this._toastTimer = 2.5;
     },
   };
+  return hud;
+}
 
-  return api;
+function setVisible(node, on, flex) {
+  if (!node) return;
+  node.style.display = on ? (flex ? 'flex' : 'block') : 'none';
+}
+
+export function updateHud(G) {
+  const hud = G.hud;
+  if (!hud || !hud.els) return;
+  const els = hud.els;
+  const dt = 1 / 60;
+
+  const money = G.state.money || 0;
+  if (els.cash) els.cash.textContent = '$' + money;
+  const stars = (G.police && G.police.stars) || G.state.wanted || 0;
+  if (els.stars) {
+    let s = '';
+    for (let i = 0; i < 5; i++) s += i < stars ? '★' : '☆';
+    els.stars.textContent = s;
+    els.stars.style.color = stars > 0 ? '#ffd21f' : '#ffffff88';
+  }
+  const hp = (G.combat && typeof G.combat.hp === 'number') ? G.combat.hp
+    : (G.player && typeof G.player.hp === 'number' ? G.player.hp : 100);
+  if (els['health-fill']) {
+    els['health-fill'].style.width = Math.max(0, Math.min(100, hp)) + '%';
+    els['health-fill'].style.height = '100%';
+    els['health-fill'].style.background = hp > 50 ? '#37c978' : hp > 25 ? '#f5a623' : '#e5484d';
+  }
+  if (els.weapon) els.weapon.textContent = (G.combat && G.combat.weapon === 'pistol') ? 'Pistol' : 'Fists';
+  if (els.ammo) els.ammo.textContent = (G.combat && G.combat.weapon === 'pistol') ? ('◉ ' + G.combat.ammo + ' / ' + G.combat.magSize) : '';
+  if (els.clock) els.clock.textContent = '17:40'; // fixed golden hour
+
+  // Speed: car speed or on-foot speed, km/h.
+  let spd = 0;
+  if (G.player) {
+    spd = G.player.car ? Math.abs(G.player.car.speed || 0) : Math.abs(G.player.speed || 0);
+  }
+  if (els.speed) els.speed.textContent = Math.round(spd * 3.6) + ' km/h';
+
+  // Objective + distance to the mission marker.
+  const M = G.missions;
+  if (els.objective) els.objective.textContent = (M && M.objective) || '';
+  if (els.distance) {
+    if (M && M.marker && G.player && G.player.pos) {
+      const d = Math.hypot(G.player.pos.x - M.marker.x, G.player.pos.z - M.marker.z);
+      els.distance.textContent = Math.round(d) + ' m';
+    } else els.distance.textContent = '';
+  }
+
+  // Message feed (fades after ~4 s).
+  if (els.feed) {
+    let html = '';
+    for (const m of hud._feed) {
+      m.t -= dt;
+      const op = Math.max(0, Math.min(1, m.t));
+      html += '<div style="opacity:' + op.toFixed(2) + '">' + m.text + '</div>';
+    }
+    hud._feed = hud._feed.filter((m) => m.t > 0);
+    if (html !== els.feed._lastHtml) { els.feed.innerHTML = html; els.feed._lastHtml = html; }
+  }
+
+  // Mission toast auto-hide.
+  if (hud._toastTimer > 0) {
+    hud._toastTimer -= dt;
+    if (hud._toastTimer <= 0 && els['mission-toast']) els['mission-toast'].style.display = 'none';
+  }
+
+  // Screens by mode.
+  const mode = G.state.mode || 'title';
+  setVisible(els['title-screen'], mode === 'title', true);
+  setVisible(els['pause-screen'], mode === 'paused', true);
+  setVisible(els['busted-screen'], mode === 'busted', true);
+  setVisible(els['wasted-screen'], mode === 'wasted', true);
 }

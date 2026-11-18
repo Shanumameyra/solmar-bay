@@ -1,625 +1,346 @@
-// missions.js — Solmar Bay story missions + taxi side jobs.
-// Sequential missions from Mama Rosa, per DESIGN.md:
-//   M0 "The Call"    - come to the cafe (marker at the plaza). Reward $0.
-//   M1 "The Pickup"  - drive to the docks, collect the package, deliver to
-//                      Rosa's cafe within 150 s. Reward $300.
-//   M2 "Hot Wheels"  - steal the marked yellow sports car at the beachfront
-//                      and bring it to the garage (south). Stealing it gives
-//                      2 stars immediately. Reward $500.
-//   M3 "The Getaway" - reach the safehouse (barrios) in 150 s with 3 stars
-//                      and 3 police cars chasing. Reward $800 + story beat.
-// After M3: free roam + repeatable taxi jobs + missions replayable for half
-// reward ("Rosa calls again"). Mission fail (timer expires or busted) ->
-// retry from the mission start, keeping cash earned.
+// missions.js — Solmar Bay story missions M0->M1->M2->M3 + taxi (Worker B, v6 fresh)
+// Contract: createMissions(G) / updateMissions(G, dt)
+// M0 intro (cafe marker) -> M1 "The Pickup" (docks package, on foot) -> M2 "Hot Wheels"
+// (steal yellow sports car) -> M3 "The Getaway" (safehouse, 3 stars) -> free roam + taxi.
 //
-// complete() is the money path: it advances G.missionIndex and adds the
-// reward to G.money, saves, toasts and plays the jingle. It is guarded
-// against double-completion.
-//
-// The module reads the player only through G.getPlayerPos / G.isInCar /
-// G.getCurrentVehicle (adapters owned by main.js) and builds its own
-// marker beacon meshes from G.THREE, so it never depends on the internals
-// of the player / vehicle / city modules. Marker positions come from
-// G.layout with the same defaults main.js uses, and every marker sits on
-// a street, the beach or an open yard so it is reachable whatever the
-// city module builds inside the blocks.
+// V6 FIX (root cause of the v5 failure): the M1 package marker (182,24) is collected
+// ON FOOT from the open road. The drive stage completes at a generous staging
+// radius around (172,25) — the car is NEVER required to enter the container yard,
+// and the package pickup never requires driving into the docks corridor.
+import * as THREE from '../vendor/three/three.module.min.js';
 
-export const DEFAULT_LAYOUT = {
-  cafe: { x: 0, z: 22 }, // Rosa's cafe, plaza south edge (on the street)
-  docks: { x: 182, z: 24 }, // package marker, open container yard
-  sportsCar: { x: -182, z: -60 }, // yellow sports car, beachfront sand
-  garage: { x: 28, z: 172 }, // south garage, street intersection
-  safehouse: { x: -100, z: 172 }, // barrios safehouse, south street
-  hospital: { x: -152, z: 172 },
-  precinct: { x: 152, z: 172 },
-  gunshop: { x: 78, z: -28 },
-  spawn: { x: 0, z: 26 },
-};
+const CAFE = { x: 0, z: 0 };
+const DOCK_STAGE = { x: 172, z: 25 };   // open-road staging point at the docks edge
+const PACKAGE = { x: 182, z: 24 };      // package marker — reached ON FOOT
+const SPORTS_CAR = { x: -150, z: -60 }; // yellow sports car, beachfront
+const GARAGE = { x: -40, z: 150 };
+const SAFEHOUSE = { x: -100, z: 150 };
 
-function buildMissions(layout) {
-  return [
-    {
-      id: 'M0',
-      name: 'The Call',
-      reward: 0,
-      intro: "Dario, it's Rosa. Come to the cafe. We need to talk.",
-      completeLine: "Good, you're here. Listen — I have a job for you.",
-      steps: [
-        {
-          type: 'goto',
-          pos: { ...layout.cafe },
-          radius: 6,
-          text: 'Go to Rosa\'s cafe in the Market Plaza',
-        },
-      ],
-    },
-    {
-      id: 'M1',
-      name: 'The Pickup',
-      reward: 300,
-      intro: 'A package is waiting at the docks. Pick it up, bring it back here.',
-      completeLine: 'Clean run. The package is safe — and so are you. For now.',
-      steps: [
-        {
-          type: 'pickup',
-          pos: { ...layout.docks },
-          radius: 5,
-          text: 'Drive to the docks and collect the package',
-        },
-        {
-          type: 'deliver',
-          pos: { ...layout.cafe },
-          radius: 6,
-          timeLimit: 150,
-          text: "Deliver the package to Rosa's cafe",
-        },
-      ],
-    },
-    {
-      id: 'M2',
-      name: 'Hot Wheels',
-      reward: 500,
-      intro: 'There is a yellow sports car parked at the beachfront. Bring it to my garage. Quietly.',
-      completeLine: 'Beautiful car. The buyer will be very happy.',
-      steps: [
-        {
-          type: 'steal',
-          pos: { ...layout.sportsCar },
-          radius: 6,
-          text: 'Steal the yellow sports car at the beachfront',
-        },
-        {
-          type: 'deliver',
-          pos: { ...layout.garage },
-          radius: 7,
-          text: 'Bring the sports car to the garage (south)',
-        },
-      ],
-    },
-    {
-      id: 'M3',
-      name: 'The Getaway',
-      reward: 800,
-      intro: "They know, Dario! Three stars on you — lose them and get to the safehouse. GO!",
-      completeLine: "You're free of the debt — for now. Solmar Bay is yours, Dario.",
-      steps: [
-        {
-          type: 'escape',
-          pos: { ...layout.safehouse },
-          radius: 7,
-          timeLimit: 150,
-          text: 'Reach the safehouse in the barrios — lose the cops!',
-        },
-      ],
-    },
-  ];
+function dist(ax, az, bx, bz) { return Math.hypot(ax - bx, az - bz); }
+
+function say(G, text) {
+  if (G.hud && G.hud.say) G.hud.say(text);
 }
 
-const TAXI_MIN_FARE = 25;
-const TAXI_MAX_FARE = 60;
+function toast(G, title, sub) {
+  if (G.hud && G.hud.toast) G.hud.toast(title, sub || '');
+}
+
+function jingle(G) {
+  if (G.audio) G.audio.sfx('jingle');
+}
 
 export function createMissions(G) {
-  const THREE = G && G.THREE;
-  const scene = G && G.scene;
-  const hasGL = !!(THREE && scene);
-  const layout = Object.assign({}, DEFAULT_LAYOUT, (G && G.layout) || {});
-  const table = buildMissions(layout);
+  const idx = (G.state && typeof G.state.missionIndex === 'number') ? G.state.missionIndex : 0;
 
-  let stepIndex = 0;
-  let stepTimer = 0; // counts down while the current step has a timeLimit
-  let stepTimerActive = false;
-  let completing = false;
-  let freeRoam = false;
-  let replayMode = false; // replaying after M3 -> half reward
-  let marker = null; // { group, ring, beam, pos }
-  let pulse = 0;
+  // Mission marker: glowing pulsing cylinder + ring, moved to the active target.
+  const markerGroup = new THREE.Group();
+  const beamMat = new THREE.MeshBasicMaterial({ color: 0xffd21f, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 9, 20, 1, true), beamMat);
+  beam.position.y = 4.5;
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xffd21f, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.4, 32), ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  markerGroup.add(beam); markerGroup.add(ring);
+  markerGroup.visible = false;
+  if (G.scene) G.scene.add(markerGroup);
 
-  // --- taxi side job ---
-  const taxi = {
-    active: false,
-    phase: 'none', // 'pickup' | 'dropoff'
-    customerPos: null,
-    destPos: null,
-    fare: 0,
-    marker: null,
+  const M = {
+    index: idx,            // 0=M0, 1=M1, 2=M2, 3=M3, 4=all done (free roam)
+    stage: 'idle',
+    timer: 0,
+    timerMax: 0,
+    marker: null,          // {x, z, radius, label}
+    objective: '',
+    message: '',
+    markerMesh: markerGroup,
+    _pulse: 0,
+    _sportsCar: null,
+    _hasPackage: false,
+    _taxi: null,           // {phase, cust:{x,z}, dest:{x,z}, timer}
+    _taxiCooldown: 8,
+    _started: false,
+    onBusted,
   };
 
-  // --- helpers ------------------------------------------------------------
-  function playerPos() {
-    if (G && typeof G.getPlayerPos === 'function') {
-      const p = G.getPlayerPos();
-      if (p) return p;
+  // The M2 sports car is created by main.js (yellow, beachfront) and tagged
+  // missionCar; ensureSportsCar() below finds it via G.vehicles.
+
+  // Start M0 on first frame (intro phone call).
+  M.stage = idx >= 4 ? 'freeroam' : idx === 0 ? 'goto-cafe' : startMissionStage(G, M, idx);
+  applyStage(G, M);
+  return M;
+}
+
+function ensureSportsCar(G, M) {
+  if (M._sportsCar) return M._sportsCar;
+  // Synchronous path: main.js pre-creates it via G.vehicles if present.
+  if (G.vehicles) {
+    for (const c of G.vehicles) if (c.missionCar) { M._sportsCar = c; return c; }
+  }
+  return null;
+}
+
+function startMissionStage(G, M, idx) {
+  M.index = idx;
+  M._hasPackage = false;
+  M.timer = 0; M.timerMax = 0;
+  if (idx === 0) return 'goto-cafe';
+  if (idx === 1) return 'drive-docks';
+  if (idx === 2) return 'steal-car';
+  if (idx === 3) return 'escape';
+  return 'freeroam';
+}
+
+function applyStage(G, M) {
+  const s = M.stage;
+  if (s === 'goto-cafe') {
+    M.marker = { x: CAFE.x, z: CAFE.z, radius: 4, label: 'cafe' };
+    M.objective = "Rosa's call: come to the café";
+    if (!M._started) {
+      M._started = true;
+      say(G, 'Rosa: "Dario, it\'s Rosa. Come to the café."');
     }
-    if (G && G.player && G.player.pos) return G.player.pos;
-    return { x: 0, y: 0, z: 0 };
+  } else if (s === 'drive-docks') {
+    M.marker = { x: DOCK_STAGE.x, z: DOCK_STAGE.z, radius: 30, label: 'docks' };
+    M.objective = 'M1 "The Pickup": drive to the docks';
+    say(G, 'Rosa: "Package is at the port, Dario. Drive to the docks — park on the road, walk in."');
+  } else if (s === 'pickup') {
+    M.marker = { x: PACKAGE.x, z: PACKAGE.z, radius: 5, label: 'package' };
+    M.objective = 'M1: collect the package on foot';
+    say(G, 'Rosa: "Park the car and walk to the package. Don\'t drive into the yard."');
+  } else if (s === 'deliver') {
+    M.timer = 150; M.timerMax = 150;
+    M.marker = { x: CAFE.x, z: CAFE.z, radius: 5, label: 'cafe' };
+    M.objective = 'M1: bring the package back to Rosa\'s café';
+    say(G, 'Rosa: "Got it? Good. Bring it back to the café — 150 seconds, don\'t dawdle."');
+  } else if (s === 'steal-car') {
+    M.marker = { x: SPORTS_CAR.x, z: SPORTS_CAR.z, radius: 4, label: 'sports' };
+    M.objective = 'M2 "Hot Wheels": steal the yellow sports car';
+    say(G, 'Rosa: "A yellow sports car is parked on the beachfront. Take it — the SBPD will notice."');
+  } else if (s === 'to-garage') {
+    M.marker = { x: GARAGE.x, z: GARAGE.z, radius: 6, label: 'garage' };
+    M.objective = 'M2: bring the sports car to the garage';
+  } else if (s === 'escape') {
+    M.timer = 150; M.timerMax = 150;
+    M.marker = { x: SAFEHOUSE.x, z: SAFEHOUSE.z, radius: 6, label: 'safehouse' };
+    M.objective = 'M3 "The Getaway": reach the safehouse — lose the cops on the way';
+    say(G, 'Rosa: "They know, Dario. Three stars on you. Get to the safehouse in the barrios — GO!"');
+    if (G.police) {
+      G.police.stars = 3;
+      if (G.state) G.state.wanted = 3;
+      if (G.hud && G.hud.say) G.hud.say('WANTED ★★★ — the SBPD is on you');
+    }
+  } else if (s === 'freeroam') {
+    M.marker = null;
+    M.objective = 'Free roam — taxi jobs pay the bills';
+    say(G, 'Rosa: "You\'re free of the debt — for now. Drive a taxi if you want easy cash."');
   }
+  updateMarkerMesh(G, M);
+}
 
-  function playerInCar() {
-    if (G && typeof G.isInCar === 'function') return !!G.isInCar();
-    if (G && G.player) return !!G.player.inCar;
-    return false;
+function updateMarkerMesh(G, M) {
+  if (!M.markerMesh) return;
+  if (!M.marker) { M.markerMesh.visible = false; return; }
+  M.markerMesh.visible = true;
+  M.markerMesh.position.set(M.marker.x, 0, M.marker.z);
+}
+
+function completeMission(G, M, reward, title) {
+  G.state.money = (G.state.money || 0) + reward;
+  if (G.state.stats) {
+    G.state.stats.missionsDone = (G.state.stats.missionsDone || 0) + 1;
+    G.state.stats.bestCash = Math.max(G.state.stats.bestCash || 0, G.state.money);
   }
+  jingle(G);
+  toast(G, title, '+$' + reward);
+  say(G, 'Mission complete: ' + title + ' +$' + reward);
+  M.index += 1;
+  G.state.missionIndex = M.index;
+  if (G.saveGame) G.saveGame(G);
+  M.stage = startMissionStage(G, M, M.index);
+  applyStage(G, M);
+}
 
-  function currentVehicle() {
-    if (G && typeof G.getCurrentVehicle === 'function') return G.getCurrentVehicle();
-    if (G && G.player) return G.player.inCar || null;
-    return null;
+function failMission(G, M, reason) {
+  say(G, 'Mission failed — ' + reason + '. Try again from the start.');
+  if (G.hud && G.hud.toast) G.hud.toast('Mission failed', reason);
+  // Retry from the mission start; cash earned is kept, nothing else is lost.
+  M.stage = startMissionStage(G, M, M.index);
+  applyStage(G, M);
+}
+
+function onBusted(G) {
+  const M = G.missions;
+  if (!M) return;
+  if (M.index >= 1 && M.index <= 3 && M.stage !== 'freeroam') {
+    failMission(G, M, 'busted by the SBPD');
   }
+}
 
-  function distTo(pos) {
-    const p = playerPos();
-    const dx = p.x - pos.x;
-    const dz = p.z - pos.z;
-    return Math.sqrt(dx * dx + dz * dz);
-  }
+export function updateMissions(G, dt) {
+  const M = G.missions;
+  if (!M || !G.player || !G.player.pos) return;
+  if (G.state.mode !== 'playing') return;
 
-  function toast(msg, kind) {
-    if (G && G.hud && typeof G.hud.toast === 'function') G.hud.toast(msg, kind || 'info');
-  }
-
-  function dialogue(line) {
-    if (G && G.hud && typeof G.hud.setDialogue === 'function') G.hud.setDialogue(line);
-  }
-
-  // --- marker beacon --------------------------------------------------------
-  function buildMarkerMesh(color) {
-    if (!hasGL) return null;
-    const group = new THREE.Group();
-    const beamMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.22, depthWrite: false,
+  // Pulse the marker.
+  M._pulse += dt;
+  if (M.markerMesh && M.markerMesh.visible) {
+    const s = 1 + Math.sin(M._pulse * 4) * 0.12;
+    M.markerMesh.scale.set(s, 1, s);
+    M.markerMesh.children.forEach((c) => {
+      if (c.material) c.material.opacity = c.geometry && c.geometry.type === 'RingGeometry'
+        ? 0.6 + Math.sin(M._pulse * 4) * 0.3 : 0.3 + Math.sin(M._pulse * 4) * 0.1;
     });
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 26, 16, 1, true), beamMat);
-    beam.position.y = 13;
-    const ringMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.85, depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    const ring = new THREE.Mesh(new THREE.RingGeometry(1.8, 2.6, 32), ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.12;
-    const coreMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 });
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), coreMat);
-    core.position.y = 1.4;
-    group.add(beam, ring, core);
-    group.visible = false;
-    scene.add(group);
-    return { group, ring, beam, core };
   }
 
-  function destroyMarker(m) {
-    if (!m || !hasGL) return;
-    scene.remove(m.group);
-    m.group.traverse((obj) => {
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) obj.material.dispose();
-    });
-  }
+  const px = G.player.pos.x, pz = G.player.pos.z;
+  const inCar = !!G.player.car;
 
-  function placeMarker(pos, color) {
-    if (!hasGL) {
-      marker = { group: null, ring: null, beam: null, core: null, pos: { ...pos } };
+  // Countdown timers.
+  if (M.timer > 0) {
+    M.timer -= dt;
+    if (M.timer <= 0) {
+      M.timer = 0;
+      failMission(G, M, 'time ran out');
       return;
     }
-    if (!marker) marker = buildMarkerMesh(color || 0xffd21f);
-    marker.pos = { ...pos };
-    marker.group.position.set(pos.x, 0, pos.z);
-    marker.group.visible = true;
   }
 
-  function hideMarker() {
-    if (marker && marker.group) marker.group.visible = false;
-    marker = null;
-  }
+  const at = (m) => (m ? dist(px, pz, m.x, m.z) <= (m.radius || 5) : false);
 
-  function placeTaxiMarker(pos, color) {
-    if (!hasGL) {
-      taxi.marker = { group: null, pos: { ...pos } };
-      return;
+  switch (M.stage) {
+    case 'goto-cafe': {
+      if (at(M.marker)) {
+        M.index = 1;
+        G.state.missionIndex = 1;
+        M.stage = 'drive-docks';
+        applyStage(G, M);
+      }
+      break;
     }
-    if (!taxi.marker) taxi.marker = buildMarkerMesh(color || 0x22ff88);
-    taxi.marker.pos = { ...pos };
-    taxi.marker.group.position.set(pos.x, 0, pos.z);
-    taxi.marker.group.visible = true;
-  }
-
-  function hideTaxiMarker() {
-    if (taxi.marker && taxi.marker.group) taxi.marker.group.visible = false;
-    taxi.marker = null;
-  }
-
-  function randomStreetPos(near, minR, maxR) {
-    const streets = [-175, -125, -75, -25, 25, 75, 125, 175];
-    for (let tries = 0; tries < 20; tries++) {
-      const onVertical = Math.random() < 0.5;
-      const s = streets[Math.floor(Math.random() * streets.length)];
-      const along = -180 + Math.random() * 360;
-      const x = onVertical ? s : along;
-      const z = onVertical ? along : s;
-      const d = Math.sqrt((x - near.x) ** 2 + (z - near.z) ** 2);
-      if (d >= minR && d <= maxR) return { x, z };
+    case 'drive-docks': {
+      // Generous staging radius: arriving anywhere near the docks road counts.
+      // Also accept walking straight to the package (player parked early / on foot).
+      if (at(M.marker) || dist(px, pz, PACKAGE.x, PACKAGE.z) <= 12) {
+        M.stage = 'pickup';
+        applyStage(G, M);
+      }
+      break;
     }
-    return { x: near.x + 60, z: near.z };
-  }
-
-  // --- mission flow -----------------------------------------------------------
-  function currentDef() {
-    const idx = (G && G.missionIndex) || 0;
-    if (idx < 0 || idx >= table.length) return null;
-    return table[idx];
-  }
-
-  function currentStep() {
-    const def = currentDef();
-    if (!def) return null;
-    return def.steps[Math.min(stepIndex, def.steps.length - 1)] || null;
-  }
-
-  function stageStep() {
-    const def = currentDef();
-    const step = currentStep();
-    if (!def || !step) return;
-    placeMarker(step.pos, step.type === 'escape' ? 0xff5533 : 0xffd21f);
-    stepTimerActive = typeof step.timeLimit === 'number';
-    stepTimer = stepTimerActive ? step.timeLimit : 0;
-    dialogue(step.text);
-    if (G && G.hud && typeof G.hud.setObjective === 'function') {
-      G.hud.setObjective(step.text, distTo(step.pos));
-    }
-    // Mission-start side effects.
-    if (def.id === 'M3' && stepIndex === 0) {
-      if (G.police) {
-        G.police.setWanted(3, 'mission');
-        G.police.forceChase(3);
-      }
-      if (G.audio) G.audio.phoneRing();
-    }
-    if (def.id === 'M2' && stepIndex === 0) {
-      api._stealHeatApplied = false;
-      if (typeof G.spawnSportsCar === 'function') G.spawnSportsCar();
-    }
-  }
-
-  function startMission(idx) {
-    stepIndex = 0;
-    stepTimer = 0;
-    stepTimerActive = false;
-    completing = false;
-    const def = table[idx];
-    if (!def) return false;
-    if (G) G.missionIndex = idx;
-    if (def.intro) dialogue(def.intro);
-    toast(`${def.id} — ${def.name}`, 'mission');
-    if (G.audio) G.audio.phoneRing();
-    stageStep();
-    if (G.emit) G.emit('mission-start', { id: def.id, index: idx });
-    return true;
-  }
-
-  function advanceStep() {
-    const def = currentDef();
-    if (!def) return;
-    stepIndex += 1;
-    if (stepIndex >= def.steps.length) {
-      api.complete();
-      return;
-    }
-    stageStep();
-    if (G.audio) G.audio.sfx('pickup');
-  }
-
-  const api = {
-    table,
-    taxi,
-
-    get stepIndex() {
-      return stepIndex;
-    },
-    get stepTimer() {
-      return stepTimer;
-    },
-    get freeRoam() {
-      return freeRoam;
-    },
-    get replayMode() {
-      return replayMode;
-    },
-
-    current: currentDef,
-    currentStep,
-
-    // Start (or restart) mission idx from its first step.
-    start: startMission,
-
-    // Begin whatever mission G.missionIndex points at (boot / continue).
-    startCurrent() {
-      const idx = (G && G.missionIndex) || 0;
-      if (idx >= table.length) {
-        freeRoam = true;
-        return false;
-      }
-      return startMission(idx);
-    },
-
-    // THE money path. Advances G.missionIndex, adds the reward to G.money,
-    // updates stats + best cash, saves, toasts and plays the jingle.
-    // Returns { before, after, reward, indexBefore, indexAfter } or null
-    // when there is no active mission / a completion is already running.
-    complete() {
-      const def = currentDef();
-      if (!def || completing || !G) return null;
-      completing = true;
-      const indexBefore = G.missionIndex || 0;
-      const moneyBefore = G.money || 0;
-      const reward = replayMode ? Math.floor(def.reward / 2) : def.reward;
-      G.money = moneyBefore + reward;
-      G.missionIndex = indexBefore + 1;
-      if (!G.stats) G.stats = { missionsDone: 0, carsStolen: 0, busted: 0, bestCash: 0 };
-      G.stats.missionsDone = (G.stats.missionsDone || 0) + 1;
-      G.stats.bestCash = Math.max(G.stats.bestCash || 0, G.money);
-      hideMarker();
-      if (def.completeLine) dialogue(def.completeLine);
-      toast(
-        reward > 0
-          ? `Mission complete +$${reward} — ${def.name}`
-          : `Mission complete — ${def.name}`,
-        'mission',
-      );
-      if (G.audio) G.audio.jingle();
-      if (G.effects) {
-        const p = playerPos();
-        G.effects.sparkle(p.x, 1.5, p.z, 0xffd700);
-      }
-      if (G.save) G.save.save();
-      if (G.emit) {
-        G.emit('mission-complete', {
-          id: def.id, reward, indexBefore, indexAfter: G.missionIndex,
-        });
-      }
-      completing = false;
-      stepIndex = 0;
-      stepTimer = 0;
-      stepTimerActive = false;
-
-      if (G.missionIndex >= table.length) {
-        // Story done: free roam, missions replayable at half reward.
-        freeRoam = true;
-        toast('Story complete! Free roam — taxi jobs pay, Rosa calls again.', 'mission');
-        if (G.hud && typeof G.hud.setObjective === 'function') {
-          G.hud.setObjective('Free roam — take taxi fares, or replay missions', 0);
-        }
-      } else {
-        startMission(G.missionIndex);
-      }
-      return {
-        before: moneyBefore,
-        after: G.money,
-        reward,
-        indexBefore,
-        indexAfter: G.missionIndex,
-      };
-    },
-
-    // Fail the current mission: toast, re-stage it from step 0, keep cash.
-    // Called on timer expiry and on busted (main.js calls onBusted()).
-    fail(reason) {
-      const def = currentDef();
-      if (!def || !G) return false;
-      toast(`Mission failed — ${reason || 'try again'}`, 'fail');
-      if (G.audio) G.audio.sting();
-      stepIndex = 0;
-      stepTimer = 0;
-      stepTimerActive = false;
-      if (G.police && def.id === 'M3') G.police.clearWanted();
-      stageStep();
-      if (G.emit) G.emit('mission-fail', { id: def.id, reason: reason || '' });
-      return true;
-    },
-
-    // Busted during a mission -> retry from the mission start.
-    onBusted() {
-      if (freeRoam) return false;
-      return api.fail('busted by the SBPD');
-    },
-
-    // After the story, replay missions at half reward.
-    replay() {
-      if (!freeRoam) return false;
-      replayMode = true;
-      freeRoam = false;
-      toast("Rosa calls again — missions pay half this time.", 'mission');
-      return startMission(1); // M1 is the first paid job
-    },
-
-    // --- taxi side job --------------------------------------------------
-    startTaxi() {
-      if (taxi.active) return false;
-      const p = playerPos();
-      taxi.customerPos = randomStreetPos(p, 25, 80);
-      taxi.destPos = randomStreetPos(taxi.customerPos, 60, 160);
-      taxi.fare = TAXI_MIN_FARE + Math.floor(
-        Math.random() * (TAXI_MAX_FARE - TAXI_MIN_FARE + 1),
-      );
-      taxi.phase = 'pickup';
-      taxi.active = true;
-      placeTaxiMarker(taxi.customerPos, 0x22ff88);
-      toast('Taxi customer waving nearby — pick them up!', 'taxi');
-      return true;
-    },
-
-    cancelTaxi() {
-      taxi.active = false;
-      taxi.phase = 'none';
-      taxi.customerPos = null;
-      taxi.destPos = null;
-      hideTaxiMarker();
-    },
-
-    // --- per-frame --------------------------------------------------------
-    update(dt) {
-      const step = Math.min(dt || 0.016, 0.05);
-      pulse += step;
-
-      // Marker pulse (ring scale + beam opacity).
-      if (marker && marker.group && marker.group.visible) {
-        const s = 1 + Math.sin(pulse * 4) * 0.12;
-        if (marker.ring) marker.ring.scale.set(s, s, 1);
-        if (marker.beam) marker.beam.material.opacity = 0.16 + Math.sin(pulse * 4) * 0.08;
-        if (marker.core) marker.core.position.y = 1.4 + Math.sin(pulse * 3) * 0.25;
-      }
-      if (taxi.marker && taxi.marker.group && taxi.marker.group.visible) {
-        const s = 1 + Math.sin(pulse * 5) * 0.15;
-        if (taxi.marker.ring) taxi.marker.ring.scale.set(s, s, 1);
-      }
-
-      if (!G || G.state !== 'playing') return;
-
-      // --- mission step checks ---
-      const def = currentDef();
-      const cur = currentStep();
-      if (def && cur && !completing) {
-        if (stepTimerActive) {
-          stepTimer -= step;
-          if (stepTimer <= 0) {
-            stepTimer = 0;
-            stepTimerActive = false;
-            api.fail('time ran out');
-            return;
-          }
-        }
-        const d = distTo(cur.pos);
-        let done = false;
-        if (cur.type === 'goto' || cur.type === 'pickup' || cur.type === 'deliver') {
-          done = d <= cur.radius;
-        } else if (cur.type === 'steal') {
-          // Done when the player is inside the marked sports car.
-          const veh = currentVehicle();
-          const inSports = !!(veh && (veh.isSportsCar || veh.sportsCar || veh.marked));
-          done = playerInCar() && (inSports || d <= cur.radius);
-          if (playerInCar() && !inSports && d <= cur.radius && G.police) {
-            // Player stole some other car at the beachfront: still counts
-            // as a steal for the step, but no sports-car bonus.
-          }
-          if (done && !api._stealHeatApplied && G.police) {
-            api._stealHeatApplied = true;
-            G.police.setWanted(2, 'steal');
-            if (G.stats) G.stats.carsStolen = (G.stats.carsStolen || 0) + 1;
-          }
-        } else if (cur.type === 'escape') {
-          done = d <= cur.radius;
-        }
-        if (done) {
-          if (cur.type === 'pickup') {
-            toast('Package collected — deliver it to Rosa!', 'mission');
-            if (G.audio) G.audio.sfx('pickup');
-            if (G.effects) G.effects.sparkle(cur.pos.x, 1.5, cur.pos.z, 0xffd700);
-          }
-          if (cur.type === 'steal') {
-            toast('Sports car stolen — get it to the garage!', 'mission');
-          }
-          advanceStep();
-          return;
-        }
-        // Live objective distance on the HUD.
-        if (G.hud && typeof G.hud.setObjective === 'function') {
-          G.hud.setObjective(cur.text, d, stepTimerActive ? stepTimer : null);
-        }
-      } else if (freeRoam) {
-        // In free roam, offer a taxi job when none is running.
-        if (!taxi.active && Math.random() < step * 0.02) api.startTaxi();
-      }
-
-      // --- taxi checks ---
-      if (taxi.active) {
-        if (taxi.phase === 'pickup' && taxi.customerPos) {
-          const dx = playerPos().x - taxi.customerPos.x;
-          const dz = playerPos().z - taxi.customerPos.z;
-          if (Math.sqrt(dx * dx + dz * dz) <= 5) {
-            taxi.phase = 'dropoff';
-            placeTaxiMarker(taxi.destPos, 0x22ff88);
-            toast('Passenger aboard — take them to the marker!', 'taxi');
-            if (G.audio) G.audio.sfx('pickup');
-          }
-        } else if (taxi.phase === 'dropoff' && taxi.destPos) {
-          const dx = playerPos().x - taxi.destPos.x;
-          const dz = playerPos().z - taxi.destPos.z;
-          if (Math.sqrt(dx * dx + dz * dz) <= 6) {
-            const fare = taxi.fare;
-            G.money = (G.money || 0) + fare;
-            if (G.stats) G.stats.bestCash = Math.max(G.stats.bestCash || 0, G.money);
-            toast(`Taxi fare +$${fare}`, 'taxi');
-            if (G.audio) G.audio.sfx('cash');
-            api.cancelTaxi();
-            if (G.save) G.save.save();
-          }
+    case 'pickup': {
+      if (!inCar && at(M.marker)) {
+        M._hasPackage = true;
+        if (G.audio) G.audio.sfx('pickup');
+        M.stage = 'deliver';
+        applyStage(G, M);
+      } else if (inCar && at(M.marker)) {
+        // Hint, throttled: the package must be collected on foot.
+        if (!M._hintT || M._pulse - M._hintT > 4) {
+          M._hintT = M._pulse;
+          say(G, 'Park the car and walk to the glowing package.');
         }
       }
-    },
-
-    // Marker position for the minimap / HUD (null when no mission).
-    markerPos() {
-      const cur = currentStep();
-      if (!cur || freeRoam) {
-        if (taxi.active && taxi.phase === 'pickup') return taxi.customerPos;
-        if (taxi.active && taxi.phase === 'dropoff') return taxi.destPos;
-        return null;
+      break;
+    }
+    case 'deliver': {
+      if (at(M.marker)) {
+        M._hasPackage = false;
+        completeMission(G, M, 300, 'M1 "The Pickup" complete');
       }
-      return cur.pos;
-    },
+      break;
+    }
+    case 'steal-car': {
+      const sc = ensureSportsCar(G, M);
+      if (sc && G.player.car === sc) {
+        // Stealing it is hot: 2 stars immediately.
+        if (G.police) {
+          G.police.stars = 2;
+          if (G.state) G.state.wanted = 2;
+        }
+        if (G.state.stats) G.state.stats.carsStolen = (G.state.stats.carsStolen || 0) + 1;
+        say(G, 'WANTED ★★ — you stole the sports car!');
+        M.stage = 'to-garage';
+        applyStage(G, M);
+      }
+      break;
+    }
+    case 'to-garage': {
+      const sc = ensureSportsCar(G, M);
+      if (sc && G.player.car === sc && at(M.marker)) {
+        completeMission(G, M, 500, 'M2 "Hot Wheels" complete');
+      } else if (sc && G.player.car !== sc && M.stage === 'to-garage') {
+        // Player left the car: point them back at it.
+        M.marker = { x: sc.pos.x, z: sc.pos.z, radius: 4, label: 'sports' };
+        M.objective = 'M2: get back in the yellow sports car';
+        updateMarkerMesh(G, M);
+      }
+      break;
+    }
+    case 'escape': {
+      if (at(M.marker)) {
+        if (G.police) { G.police.stars = 0; if (G.state) G.state.wanted = 0; }
+        completeMission(G, M, 800, 'M3 "The Getaway" complete');
+      }
+      break;
+    }
+    case 'freeroam': {
+      updateTaxi(G, M, dt);
+      break;
+    }
+    default:
+      break;
+  }
+}
 
-    objectiveText() {
-      const cur = currentStep();
-      if (cur) return cur.text;
-      if (freeRoam) return 'Free roam — take taxi fares, or replay missions';
-      return '';
-    },
+function updateTaxi(G, M, dt) {
+  const rng = G.rng || { next: () => Math.random() };
+  const px = G.player.pos.x, pz = G.player.pos.z;
+  const inCar = !!G.player.car;
 
-    distanceToMarker() {
-      const pos = api.markerPos();
-      return pos ? distTo(pos) : 0;
-    },
+  if (!M._taxi) {
+    M._taxiCooldown -= dt;
+    if (M._taxiCooldown <= 0 && inCar) {
+      // A waving pedestrian nearby wants a ride.
+      const ang = rng.next() * Math.PI * 2;
+      const d = 25 + rng.next() * 45;
+      const cx = Math.max(-190, Math.min(190, px + Math.sin(ang) * d));
+      const cz = Math.max(-190, Math.min(190, pz + Math.cos(ang) * d));
+      M._taxi = { phase: 'pickup', cust: { x: cx, z: cz }, dest: null, fare: 40 + Math.floor(rng.next() * 30) };
+      M.marker = { x: cx, z: cz, radius: 5, label: 'taxi' };
+      M.objective = 'Taxi: pick up the waving customer';
+      say(G, 'Taxi customer is waving nearby — pick them up.');
+      updateMarkerMesh(G, M);
+    }
+    return;
+  }
 
-    // Reset everything (new game).
-    reset() {
-      stepIndex = 0;
-      stepTimer = 0;
-      stepTimerActive = false;
-      completing = false;
-      freeRoam = false;
-      replayMode = false;
-      api._stealHeatApplied = false;
-      hideMarker();
-      api.cancelTaxi();
-      if (G) G.missionIndex = 0;
-      startMission(0);
-    },
-
-    dispose() {
-      destroyMarker(marker);
-      marker = null;
-      destroyMarker(taxi.marker);
-      taxi.marker = null;
-    },
-  };
-
-  return api;
+  const T = M._taxi;
+  if (T.phase === 'pickup') {
+    if (inCar && dist(px, pz, T.cust.x, T.cust.z) <= 5 && Math.abs(G.player.car.speed || 0) < 3) {
+      const ang = rng.next() * Math.PI * 2;
+      const d = 60 + rng.next() * 70;
+      const dx = Math.max(-190, Math.min(190, px + Math.sin(ang) * d));
+      const dz = Math.max(-190, Math.min(190, pz + Math.cos(ang) * d));
+      T.phase = 'dropoff';
+      T.dest = { x: dx, z: dz };
+      M.marker = { x: dx, z: dz, radius: 6, label: 'taxi' };
+      M.objective = 'Taxi: drop the customer off';
+      say(G, 'Customer: "Take me over there, quick!"');
+      updateMarkerMesh(G, M);
+    }
+  } else if (T.phase === 'dropoff') {
+    if (inCar && dist(px, pz, T.dest.x, T.dest.z) <= 6) {
+      G.state.money = (G.state.money || 0) + T.fare;
+      if (G.audio) G.audio.sfx('pickup');
+      toast(G, 'Taxi fare', '+$' + T.fare);
+      say(G, 'Taxi fare +$' + T.fare);
+      M._taxi = null;
+      M._taxiCooldown = 10;
+      M.marker = null;
+      M.objective = 'Free roam — taxi jobs pay the bills';
+      updateMarkerMesh(G, M);
+    }
+  }
 }

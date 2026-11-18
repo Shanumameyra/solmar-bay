@@ -1,99 +1,116 @@
-[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun)
-[![rank](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/rank.svg)](https://make.fun)
-[![reward](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/reward.svg)](https://make.fun)
+# SOLMAR BAY
 
-# SOLMAR BAY — Make GTA 6
+[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/competitions/gta6-01)
+[![rank](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/rank.svg)](https://make.fun/competitions/gta6-01)
+[![reward](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/reward.svg)](https://make.fun/competitions/gta6-01)
 
-A tiny open-world crime game set in Solmar Bay, a fictional coastal city at
-golden hour (17:40). You are Dario "D" Cruz, just out of the joint. Mama
-Rosa, the fixer at the cafe in the Market Plaza, has work for you — if you
-can stay ahead of the SBPD.
+An original open-world crime game in a sun-soaked coastal city, in the spirit
+of GTA 6 — built entirely from scratch, with nothing borrowed from Rockstar
+Games or any other commercial game.
 
-Built for the [gta6-01 "Make GTA 6"](https://make.fun) competition
-($1,666 prize pool). No build step, no network requests, no audio files:
-the game is static files under `game/`, Three.js is vendored, and all sound
-is synthesised with WebAudio.
+You are **Dario "D" Cruz**, 28, a getaway driver who owes money to the wrong
+people. **Mama Rosa**, who runs a café in the market plaza, has one last job
+for you. Steal the car. Grab the package. Outrun the SBPD. Get free.
 
-## Play
+## The city
 
-```sh
-node serve.ts        # serves the game at http://localhost:8080
-```
+**Solmar Bay** is a fictional coastal city, ~400×400 m, 8×8 blocks: a
+beachfront with a pier and palms to the west, the market plaza and Rosa's café
+at the centre, downtown towers with neon to the north-east, the port and
+container docks to the east, and the colourful barrios to the south. Fixed
+golden hour (17:40) — warm light, long shadows.
 
-Open the page, press **Enter**, and go. Your progress autosaves to
-localStorage (`solmar-bay-save-v1`).
+## What you can do
 
-## Controls
+- **Explore on foot or by car** — walk (5 m/s), run (8 m/s), drive arcade
+  physics cars (top speed 38 m/s, sports 46 m/s) with handbrake drift.
+- **Steal any parked car** (E) — stealing in view of police or pedestrians
+  raises your wanted level.
+- **Outrun the SBPD** — wanted stars 0–5, patrol cars that chase, ram and
+  roadblock, busted respawns at the precinct, decay when you break line of
+  sight.
+- **Run missions for Mama Rosa** — M0 intro call, M1 "The Pickup" (docks
+  package, $300), M2 "Hot Wheels" (steal the yellow sports car, $500), M3
+  "The Getaway" (3-star escape to the safehouse, $800), then free roam with
+  repeatable taxi fares.
+- **Fight** — fists (F) and a 12-round pistol (click, R reload), police and
+  pedestrians react, medkits at the café and the hospital.
+- **Live city** — 10 traffic cars following street loops and stopping at red
+  lights, pedestrians on the sidewalks, cash pickups, a HUD with cash,
+  wanted stars, health, weapon, speed, clock, objective and a live minimap.
+- **Sound, all synthesized** (WebAudio, no files) — engine, sirens, gunshots,
+  jingles, and a slow chord pad. M mutes.
+- **Save** — progress (money, mission, stats) in `localStorage`, autosaved
+  every 30 s and on mission complete, bust or pause.
+
+## Controls (desktop Chrome, keyboard + mouse)
 
 | Key | Action |
-| --- | ------ |
-| WASD | Move / drive |
+| --- | --- |
+| WASD | Move / drive (W accel, S brake/reverse, A/D steer) |
 | Shift | Run / handbrake |
-| Mouse | Look (click to lock the pointer) |
-| E | Enter / exit / steal a car |
+| Mouse | Look (click canvas to lock) |
+| E | Enter / exit car, steal car |
 | F | Punch |
-| Click | Shoot (pistol) |
+| Left click | Shoot pistol (when armed) |
 | R | Reload |
 | 1 / 2 | Fists / pistol |
 | H | Honk |
 | M | Mute |
 | Esc / P | Pause |
-| Enter | Confirm on the title screen |
+| Enter | Confirm on title screen |
 
-## The city
+## Play it
 
-Eight by eight blocks, about 400×400 m: Beachfront to the west, Market
-Plaza in the centre, Downtown to the north-east, the Port and docks to the
-east, the Barrios to the south. On foot you walk at 5 m/s and run at 8 m/s;
-cars top out at 38 m/s (46 for the sports car). The police rate you 0–5
-stars — steal a car in front of a cop and they will chase you.
+No build step, no network: the game is static files under `game/`.
 
-## Missions
+```sh
+node serve.ts            # serves game/ on http://127.0.0.1:8080
+```
 
-Rosa hands them out in order from the cafe:
-
-1. **M0 — The Call**: get to Rosa's cafe.
-2. **M1 — The Pickup**: drive to the docks, collect the package, bring it
-   back to the cafe within 150 s. Pays $300.
-3. **M2 — Hot Wheels**: steal the yellow sports car at the beachfront and
-   bring it to the garage south of the plaza. Pays $500.
-4. **M3 — The Getaway**: reach the safehouse in 150 s with 3 stars on you.
-   Pays $800.
-
-Fail a timed mission (or get busted) and you retry from the mission start.
-After M3 the city is yours: free roam, taxi jobs, and mission replays at
-half reward.
-
-## Screenshots
-
-`shots.json` lists the four entry shots; `tests/shots.py` regenerates them
-from the game (the hero frame is the image supplied for the entry, resized
-to 1280×720 only).
+Then open <http://127.0.0.1:8080/> in desktop Chrome and press Enter.
 
 ## Tests
 
 ```sh
-node tests/selftest.mjs     # logic self-test (Node, no browser)
-python3 tests/shots.py      # regenerate the 4 screenshots
-python3 tests/playtest.py   # end-to-end playtest: Enter, walk, steal,
-                            # drive, M1 complete + paid, HUD, zero errors
+node tests/selftest.mjs   # static checks: syntax, files, LICENSE, screenshots
+python3 tests/playtest.py # Playwright: Enter, walking speed, car enter/exit, M1 end-to-end
+python3 tests/shots.py    # Playwright: captures screenshots 2-4 from the game
 ```
 
-The game also exposes two hooks for automated testing:
-`window.render_game_to_text()` (a JSON snapshot of mode, player, money,
-mission and entities) and `window.advanceTime(ms)` (deterministic 1/60 s
-stepping, so tests do not depend on frame rate).
+## Layout
 
-## Build
-
-```sh
-MAKEFUN_OUTPUT_DIR=/output node main.ts
 ```
-
-Copies `game/` and `screenshots/` into the output directory and writes
-`dossier.json` with the kit's `buildDossier`. Running it twice produces
-byte-identical output.
+game/
+  index.html            page + HUD + title/pause/busted/wasted screens
+  src/
+    config.js           tuning + key places (spawn, café, docks, garage…)
+    random.js           deterministic RNG (seed 7)
+    world.js            ground, sky, fog, lights, colliders, protected routes
+    city.js             buildings, neon, palms, stalls, containers, crane
+    render.js           renderer + chase camera helpers
+    player.js           Dario on foot (walk/run, collision slide)
+    input.js            keyboard + mouse input
+    vehicle.js          arcade car physics + car factory
+    traffic.js          10 traffic cars + 8 stealable parked cars
+    police.js           wanted stars, chase, ram, busted, decay
+    missions.js         M0–M3 story + taxi jobs
+    combat.js           fists, pistol, damage, medkits, wasted
+    hud.js              cash, stars, health, objective, feed, screens
+    minimap.js          live 160×160 minimap
+    audio.js            WebAudio synth: engine, siren, SFX, music
+    effects.js          smoke, sparks, muzzle flash
+    save.js             localStorage save / load
+    shots.js            deterministic ?shot=1..4 staging for screenshots
+    main.js             boot + fixed-step loop + debug handles
+  vendor/three/         three.js (vendored, minified)
+screenshots/             1-hero.jpg (cover) + 2-title, 3-onfoot, 4-mission
+main.ts                 hands the entry in: copies game/ + screenshots/ to
+                        /output and writes /output/dossier.json
+serve.ts                static server for local play / QA
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). All names, characters, art, story, sound and
+music are original. No Rockstar Games content.

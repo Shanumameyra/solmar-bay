@@ -1,1 +1,1 @@
-{"name":"solmar-bay","private":true,"type":"module"}
+{"description":"SOLMAR BAY — an original open-world crime game for make.fun gta6-01","engines":{"node":">=22"},"license":"MIT","name":"solmar-bay","private":true,"scripts":{"build":"node main.ts","playtest":"python3 tests/playtest.py","serve":"node serve.ts","shots":"python3 tests/shots.py","start":"node serve.ts","test":"node tests/selftest.mjs"},"type":"module","version":"6.0.0"}

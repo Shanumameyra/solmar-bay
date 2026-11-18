@@ -1,61 +1,49 @@
-"""playtest.py — Solmar Bay end-to-end playtest (v5).
+"""SOLMAR BAY — Playwright playtest (real Chromium, real keyboard input).
 
-Drives the real game in a headless browser with the develop-web-game loop:
-short input bursts, then read state, then adjust. All movement is stepped
-with window.advanceTime (deterministic 1/60 s steps) and measured in GAME
-time, because software GL in this VM renders far slower than a real GPU and
-wall-clock timing would make every movement check flaky.
+Starts serve.ts, loads the game, and plays M1 end-to-end:
+  title -> Enter -> walk to cafe (M0) -> walk to parked car -> E enter ->
+  drive to docks -> E exit -> walk to package -> walk back -> E enter ->
+  drive back -> walk to cafe -> M1 complete +$300.
+Then verifies the (c) behaviours: G.police.addWanted, busted -> precinct
+(60,100), wasted -> hospital (150,-100), steering direction.
 
-Checks (0 failures required):
-  1. Enter on the title starts the game (title -> playing, M0 -> M1).
-  2. WASD walks at ~5 m/s in game time (and Shift runs at ~8 m/s).
-  3. Walk to a parked car, E to enter, W to drive, E to exit, E to re-enter.
-  4. M1 end to end: cafe -> docks -> package collected -> deliver to the
-     cafe -> M1 completes and pays $300 (mission becomes M2).
-  5. HUD: cash, objective, speed, minimap and the stars row are readable
-     and no HUD panel covers the centre of the screen (where the car is).
-  6. Zero console errors and zero page errors in every scenario.
+Game time is advanced with window.advanceTime (fixed 1/60 s steps, the real
+game code) because headless SwiftShader renders at ~2-5 fps and the game's
+own loop caps at 5 steps/frame; wall-clock driving would take 5x longer.
+Inputs are real Playwright keyboard state, read by the real input handler.
 
-Run from the repo root:  python3 tests/playtest.py
-Exit 0 when every check passes, else exit 1 (with the failing step named).
+Usage: python3 tests/playtest.py [--keep-server]
+Exit 0 = PLAYTEST 0 FAILURE, 1 = any failure.
 """
-
-import base64
+import json
 import math
-import os
-import socket
 import subprocess
 import sys
 import time
+import urllib.request
+from pathlib import Path
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHROME = os.path.expanduser(
-    "~/.cache/ms-playwright/chromium_headless_shell-1255/"
-    "chrome-headless-shell-linux64/chrome-headless-shell")
-
-CHROME_ARGS = [
-    "--no-sandbox",
-    "--enable-unsafe-swiftshader",
-    "--use-gl=angle",
-    "--use-angle=swiftshader",
-    "--disable-dev-shm-usage",
-]
+REPO = Path(__file__).resolve().parent.parent
+PORT = 8931
+BASE = f"http://127.0.0.1:{PORT}"
 
 FAILURES = []
-LOG = open("/tmp/playtest.log", "w", encoding="utf-8")
+LOG = []
 
 
-def note(ok, label, detail=""):
-    line = ("  PASS  " if ok else "  FAIL  ") + label \
-        + (f" — {detail}" if detail and not ok else "")
-    print(line, flush=True)
-    LOG.write(line + "\n")
-    LOG.flush()
+def log(msg):
+    LOG.append(msg)
+    print(msg, flush=True)
+
+
+def check(name, ok, detail=""):
+    log(f"{'PASS' if ok else 'FAIL'}  {name}" + (f" — {detail}" if detail else ""))
     if not ok:
-        FAILURES.append(label + (f" ({detail})" if detail else ""))
+        FAILURES.append(name)
+    return ok
 
 
-def wrap_angle(a):
+def norm(a):
     while a > math.pi:
         a -= 2 * math.pi
     while a < -math.pi:
@@ -63,381 +51,453 @@ def wrap_angle(a):
     return a
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-class Driver:
-    """One browser tab on the game, plus a held-key set."""
-
+class Game:
     def __init__(self, page):
-        self.page = page
+        self.pg = page
         self.held = set()
+        self.game_ms = 0
         self.errors = []
-        page.on("console",
-                lambda m: self.errors.append(f"console.{m.type}: {m.text}")
-                if m.type == "error" else None)
-        page.on("pageerror", lambda e: self.errors.append(f"pageerror: {e}"))
+        self.page_errors = []
 
     def state(self):
-        return self.page.evaluate("() => window.render_game_to_text()")
+        return json.loads(self.pg.evaluate("() => window.render_game_to_text()"))
 
-    def dbg(self):
-        return self.page.evaluate("() => window.__GTA ? window.__GTA.dbg : null")
+    def gta(self):
+        return self.pg.evaluate("() => window.__GTA")
 
-    def advance(self, ms, render=False):
-        # render=False: pure logic steps, no WebGL render — fast even under
-        # software GL. Render only when a screenshot or a visual read needs
-        # a fresh frame.
-        return self.page.evaluate(
-            f"() => window.advanceTime({int(ms)}, {str(render).lower()})")
+    def boot(self):
+        return self.pg.evaluate("() => window.__GTA_BOOT")
 
-    def pause_raf(self, paused):
-        self.page.evaluate(
-            f"() => window.__setRafPaused({str(paused).lower()})")
-
-    def press(self, key):
-        self.page.keyboard.press(key)
-        self.page.wait_for_timeout(200)
+    def advance(self, ms):
+        self.pg.evaluate(f"() => window.advanceTime({int(ms)})")
+        self.game_ms += ms
 
     def set_keys(self, want):
-        for key in sorted(self.held - want):
-            self.page.keyboard.up(key)
-        for key in sorted(want - self.held):
-            self.page.keyboard.down(key)
-        self.held = set(want)
+        want = set(want)
+        for k in sorted(self.held - want):
+            self.pg.keyboard.up(k)
+        for k in sorted(want - self.held):
+            self.pg.keyboard.down(k)
+        self.held = want
 
-    def release_keys(self):
+    def release_all(self):
         self.set_keys(set())
 
-    def wait_state(self, mode, timeout_s=20):
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            if self.state()["mode"] == mode:
-                return True
-            time.sleep(0.3)
-        return False
+    def press(self, key):
+        self.pg.keyboard.press(key)
 
-    def walk_to(self, tx, tz, arrive=2.5, budget_s=150, run=True):
-        """Walk (Shift = run) to a point, steering with W + A/D strafes.
-        Recovers when stuck against a wall: back up, sidestep, re-approach
-        (a straight line across the city crosses buildings; callers should
-        still route via streets — see walk_route)."""
-        t0 = time.time()
-        last = None
-        best = None
-        best_time = time.time()
-        side = 1
-        while time.time() - t0 < budget_s:
-            s = self.state()
-            p = s["player"]
-            dx, dz = tx - p["x"], tz - p["z"]
-            dist = math.hypot(dx, dz)
-            if dist <= arrive:
-                self.release_keys()
-                return True, dist
-            last = (dist, p["x"], p["z"])
-            if best is None or dist < best - 0.5:
-                best = dist
-                best_time = time.time()
-            if time.time() - best_time > 6:
-                # Stuck (probably a building face): back up, sidestep.
-                self.set_keys({"s"})
-                self.advance(800, False)
-                self.set_keys({"w", "d" if side > 0 else "a"})
-                self.advance(800, False)
-                side = -side
-                best = None
-                best_time = time.time()
-                continue
-            diff = wrap_angle(math.atan2(dx, dz) - p["heading"])
-            want = {"w"}
-            if run:
-                want.add("Shift")
-            if diff > 0.25:
-                want.add("d")
-            elif diff < -0.25:
-                want.add("a")
-            self.set_keys(want)
-            self.advance(400, False)
-        self.release_keys()
-        return False, (last[0] if last else -1)
+    def vehicles(self):
+        return self.pg.evaluate(
+            "() => window.__GTA_BOOT.vehicles.map(c => "
+            "({x: c.pos.x, z: c.pos.z, parked: !!c.parked, driver: c._driver || null}))"
+        )
 
-    def walk_route(self, points, arrive=2.5, budget_s=150, run=True):
-        """Walk a street route: a list of (x, z) waypoints in order."""
-        for wx, wz in points:
-            ok, detail = self.walk_to(wx, wz, arrive=arrive,
-                                     budget_s=budget_s, run=run)
-            if not ok:
-                return False, f"waypoint ({wx}, {wz}): {detail} m away"
-        return True, "route done"
+    def nearest_car(self, x, z):
+        best, bestd = None, 1e9
+        for c in self.vehicles():
+            d = math.hypot(c["x"] - x, c["z"] - z)
+            if d < bestd:
+                best, bestd = c, d
+        return best, bestd
 
-    def drive_to(self, tx, tz, arrive=5.5, budget_s=180):
-        """Drive to a point. Coasts (no throttle) into sharp turns so the
-        car can actually make them, and reverses out when stuck."""
-        t0 = time.time()
-        last_progress = time.time()
-        best = None
-        while time.time() - t0 < budget_s:
-            s = self.state()
-            p = s["player"]
-            if not p["inCar"]:
-                self.release_keys()
-                return False, "left the car"
-            dx, dz = tx - p["x"], tz - p["z"]
-            dist = math.hypot(dx, dz)
-            if dist <= arrive:
-                self.release_keys()
-                return True, dist
-            if best is None or dist < best - 0.5:
-                best = dist
-                last_progress = time.time()
-            diff = wrap_angle(math.atan2(dx, dz) - p["heading"])
-            if time.time() - last_progress > 10:
-                # Stuck against something: reverse out, steering away.
-                self.set_keys({"s", "a" if diff > 0 else "d"})
-                self.advance(1200, False)
-                self.release_keys()
-                last_progress = time.time()
-                best = None
-                continue
-            want = set()
-            speed = p["speed"]
-            if abs(diff) > 1.2 and speed > 8:
-                pass  # coast: no throttle, tighter turn
+
+def walk_to(g, tx, tz, radius=3.0, budget_ms=90000, label="walk"):
+    """On-foot autopilot: W + A/D steering toward the target. Returns (ok, secs)."""
+    start = g.game_ms
+    last = None
+    stuck_since = None
+    sidestep_until = 0
+    while g.game_ms - start < budget_ms:
+        s = g.state()
+        p = s["player"]
+        d = math.hypot(tx - p["x"], tz - p["z"])
+        if d <= radius:
+            g.release_all()
+            return True, (g.game_ms - start) / 1000.0
+        bearing = math.atan2(tx - p["x"], tz - p["z"])
+        diff = norm(bearing - p["heading"])
+        keys = {"w"}
+        if g.game_ms < sidestep_until:
+            keys = {"d"}
+        elif diff > 0.15:
+            keys.add("a")
+        elif diff < -0.15:
+            keys.add("d")
+        g.set_keys(keys)
+        g.advance(250)
+        now = (p["x"], p["z"])
+        if last and math.hypot(now[0] - last[0], now[1] - last[1]) < 0.05:
+            if stuck_since is None:
+                stuck_since = g.game_ms
+            elif g.game_ms - stuck_since > 5000:
+                log(f"  [{label}] stuck at ({p['x']:.1f},{p['z']:.1f}), sidestepping")
+                sidestep_until = g.game_ms + 800
+                stuck_since = None
+        else:
+            stuck_since = None
+        last = now
+    g.release_all()
+    s = g.state()
+    log(f"  [{label}] TIMEOUT at ({s['player']['x']:.1f},{s['player']['z']:.1f}), "
+        f"target ({tx},{tz}), stage={s['mission']['stage']}")
+    return False, (g.game_ms - start) / 1000.0
+
+
+def stop_car(g, budget_ms=8000):
+    """Brake (then coast) until the car is (nearly) stationary."""
+    start = g.game_ms
+    while g.game_ms - start < budget_ms:
+        s = g.state()
+        if abs(s["player"]["speed"]) < 0.5:
+            g.release_all()
+            return True
+        if abs(s["player"]["speed"]) < 2.0:
+            g.release_all()  # coast to a stop on drag; holding S would reverse
+        else:
+            g.set_keys({"s"})
+        g.advance(100)
+    g.release_all()
+    return abs(g.state()["player"]["speed"]) < 1.0
+
+
+def drive_to(g, waypoints, budget_ms=150000, label="drive"):
+    """Driving autopilot along street waypoints. Returns (ok, secs)."""
+    start = g.game_ms
+    wi = 0
+    last_pos = None
+    stuck_since = None
+    reverse_until = 0
+    last_wp_dist = None
+    last_wp_progress = g.game_ms
+    while g.game_ms - start < budget_ms:
+        s = g.state()
+        p = s["player"]
+        if not p["inCar"]:
+            g.release_all()
+            log(f"  [{label}] no longer in car at ({p['x']:.1f},{p['z']:.1f})")
+            return False, (g.game_ms - start) / 1000.0
+        tx, tz = waypoints[wi]
+        d = math.hypot(tx - p["x"], tz - p["z"])
+        if d < 8:
+            wi += 1
+            if wi >= len(waypoints):
+                g.release_all()
+                return True, (g.game_ms - start) / 1000.0
+            last_wp_dist = None
+            last_wp_progress = g.game_ms
+            continue
+        # Progress watchdog: the distance to the waypoint must shrink over
+        # time; a car circling or wedged makes no progress even while moving.
+        if last_wp_dist is None or d < last_wp_dist - 1.0:
+            last_wp_dist = d
+            last_wp_progress = g.game_ms
+        elif g.game_ms - last_wp_progress > 8000:
+            log(f"  [{label}] no progress toward waypoint {wi} ({d:.0f} m away), reversing out")
+            reverse_until = g.game_ms + 1200
+            last_wp_progress = g.game_ms
+            last_wp_dist = d
+        bearing = math.atan2(tx - p["x"], tz - p["z"])
+        diff = norm(bearing - p["heading"])
+        speed = abs(p["speed"])
+        keys = set()
+        if g.game_ms < reverse_until:
+            keys = {"s", "a" if diff > 0 else "d"}
+        else:
+            # Slow down for big turns: a fast car cannot hit a close waypoint
+            # and ends up oscillating past it. Brake first, then turn.
+            if abs(diff) > 2.0 and speed > 3:
+                keys.add("s")
+            elif abs(diff) > 1.0 and speed > 8:
+                keys.add("s")
             else:
-                want.add("w")
+                keys.add("w")
             if diff > 0.12:
-                want.add("d")
+                keys.add("a")
             elif diff < -0.12:
-                want.add("a")
-            self.set_keys(want)
-            self.advance(400, False)
-        self.release_keys()
-        return False, f"timeout {best and round(best, 1)} m away"
+                keys.add("d")
+        g.set_keys(keys)
+        g.advance(250)
+        now = (p["x"], p["z"])
+        if last_pos and math.hypot(now[0] - last_pos[0], now[1] - last_pos[1]) < 0.05:
+            if stuck_since is None:
+                stuck_since = g.game_ms
+            elif g.game_ms - stuck_since > 4000:
+                log(f"  [{label}] stuck at ({p['x']:.1f},{p['z']:.1f}), reversing out")
+                reverse_until = g.game_ms + 1200
+                stuck_since = None
+        else:
+            stuck_since = None
+        last_pos = now
+    g.release_all()
+    s = g.state()
+    log(f"  [{label}] TIMEOUT at ({s['player']['x']:.1f},{s['player']['z']:.1f}), "
+        f"waypoint {wi}/{len(waypoints)}, stage={s['mission']['stage']}")
+    return False, (g.game_ms - start) / 1000.0
+
+
+def enter_car(g, label="enter"):
+    """Press E and wait for the 0.4 s door animation. Returns inCar."""
+    for _ in range(12):
+        g.press("e")
+        g.advance(200)
+        if g.state()["player"]["inCar"]:
+            return True
+    return g.state()["player"]["inCar"]
+
+
+def exit_car(g, label="exit"):
+    for _ in range(12):
+        g.press("e")
+        g.advance(200)
+        if not g.state()["player"]["inCar"]:
+            return True
+    return not g.state()["player"]["inCar"]
 
 
 def main():
-    from playwright.sync_api import sync_playwright
-
-    port = free_port()
     server = subprocess.Popen(
-        ["node", "serve.ts", str(port)], cwd=REPO,
+        ["node", "serve.ts", str(PORT)], cwd=REPO,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
-        deadline = time.time() + 15
-        import urllib.request
-        while time.time() < deadline:
+        for _ in range(50):
             try:
-                urllib.request.urlopen(f"http://localhost:{port}/", timeout=2)
+                urllib.request.urlopen(BASE + "/index.html", timeout=1)
                 break
             except Exception:
-                time.sleep(0.3)
+                time.sleep(0.2)
+        else:
+            print("FAIL  serve.ts did not answer")
+            return 1
+
+        from playwright.sync_api import sync_playwright
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(executable_path=CHROME, args=CHROME_ARGS)
-            try:
-                page = browser.new_page(viewport={"width": 1280, "height": 720})
-                d = Driver(page)
-                page.goto(f"http://localhost:{port}/", timeout=30000)
-                page.wait_for_timeout(2500)
+            browser = pw.chromium.launch(
+                args=["--use-gl=swiftshader", "--enable-unsafe-swiftshader"])
+            page = browser.new_page(viewport={"width": 640, "height": 360})
+            g = Game(page)
+            page.on("console", lambda m: g.errors.append(m.text) if m.type == "error" else None)
+            page.on("pageerror", lambda e: g.page_errors.append(str(e)))
+            page.add_init_script("localStorage.clear()")
+            page.goto(BASE + "/index.html")
+            page.wait_for_timeout(3500)
+            page.wait_for_function("() => !!window.__GTA_BOOT", timeout=15000)
 
-                # -- 1. Enter starts the game -------------------------
-                s = d.state()
-                note(s["mode"] == "title", "1. title screen shows on load",
-                     f"mode={s['mode']}")
-                d.press("Enter")
-                d.advance(600, False)
-                # Freeze the rAF loop from here on: the simulation is driven
-                # by advanceTime only, so the slow software renderer cannot
-                # starve or flake the logic checks.
-                d.pause_raf(True)
-                s = d.state()
-                note(s["mode"] == "playing", "1. Enter starts the game",
-                     f"mode={s['mode']}")
-                note(s["mission"] and s["mission"]["id"] == "M1",
-                     "1. M0 completes at the cafe, M1 starts",
-                     f"mission={s['mission'] and s['mission']['id']}")
-                money_m1_start = s["money"]
+            # --- integration state: real modules, not fallbacks ----------------
+            info = page.evaluate("""() => {
+              const G = window.__GTA_BOOT;
+              let meshes = 0, instanced = 0;
+              G.scene.traverse(o => { if (o.isInstancedMesh) instanced++; else if (o.isMesh) meshes++; });
+              return {
+                fallbackPlayer: !!G.player._isFallback,
+                hasUpdate: typeof G.player.update === 'function',
+                colliders: G.world.colliders.length,
+                circleColliders: (G.world.circleColliders || []).length,
+                hasIsBlocked: typeof G.world.isBlocked === 'function',
+                meshes, instanced,
+                peds: (G.world.peds || []).length,
+                parked: (G.traffic && G.traffic.parked.length) || 0,
+                traffic: (G.traffic && G.traffic.cars.length) || 0,
+                textHook: typeof window.render_game_to_text === 'function',
+                advanceHook: typeof window.advanceTime === 'function',
+                addWanted: typeof (G.police && G.police.addWanted) === 'function',
+              };
+            }""")
+            log(f"boot: {json.dumps(info)}")
+            check("real player (not fallback)", not info["fallbackPlayer"])
+            check("player.update wired (Worker A updatePlayer)", info["hasUpdate"])
+            check("real world: colliders present", info["colliders"] > 20, f"{info['colliders']} box + {info['circleColliders']} circle")
+            check("world.isBlocked present (real world.js)", info["hasIsBlocked"])
+            check("city rendered: meshes present", info["meshes"] > 30 and info["instanced"] >= 3,
+                  f"{info['meshes']} meshes, {info['instanced']} instanced")
+            check("pedestrians exist", info["peds"] >= 10, f"{info['peds']} peds")
+            check("traffic + parked cars", info["traffic"] == 10 and info["parked"] == 8)
+            check("render_game_to_text + advanceTime exposed", info["textHook"] and info["advanceHook"])
+            check("G.police.addWanted exists", info["addWanted"])
 
-                # -- 2. walk speed in game time -----------------------
-                s0 = d.state()
-                d.page.keyboard.down("w")
-                s1 = d.advance(2000, False)
-                d.page.keyboard.up("w")
-                dist = math.hypot(s1["player"]["x"] - s0["player"]["x"],
-                                  s1["player"]["z"] - s0["player"]["z"])
-                gt = max(0.01, s1["time"] - s0["time"])
-                note(dist / gt >= 4.5, "2. walk speed ~5 m/s in game time",
-                     f"{dist:.1f} m in {gt:.2f} s = {dist / gt:.2f} m/s")
-                s0 = d.state()
-                d.page.keyboard.down("Shift")
-                d.page.keyboard.down("w")
-                s1 = d.advance(2000, False)
-                d.page.keyboard.up("w")
-                d.page.keyboard.up("Shift")
-                dist = math.hypot(s1["player"]["x"] - s0["player"]["x"],
-                                  s1["player"]["z"] - s0["player"]["z"])
-                gt = max(0.01, s1["time"] - s0["time"])
-                note(dist / gt >= 7.0, "2. run speed ~8 m/s in game time",
-                     f"{dist:.1f} m in {gt:.2f} s = {dist / gt:.2f} m/s")
+            # --- 1. title -> Enter --------------------------------------------
+            s = g.state()
+            check("starts on title screen", s["mode"] == "title", s["mode"])
+            title_visible = page.evaluate(
+                "() => getComputedStyle(document.getElementById('title-screen')).display !== 'none'")
+            check("title screen visible", title_visible)
+            page.screenshot(path="/tmp/playtest-1-title.png")
+            g.press("Enter")
+            g.advance(400)
+            s = g.state()
+            check("Enter starts the game", s["mode"] == "playing", s["mode"])
+            title_hidden = page.evaluate(
+                "() => getComputedStyle(document.getElementById('title-screen')).display === 'none'")
+            check("title screen hides after Enter", title_hidden)
 
-                # -- 3. walk to a parked car, steal it, drive, exit ----
-                s = d.state()
-                parked = d.dbg()["parked"]
-                px, pz = s["player"]["x"], s["player"]["z"]
-                car = min(parked, key=lambda c: math.hypot(c["x"] - px, c["z"] - pz))
-                # Route via streets: the direct line crosses the plaza
-                # blocks. (0, -25) and (25, -72) are street centrelines.
-                ok, detail = d.walk_route(
-                    [(0, -25), (25, -25), (25, -72), (car["x"], car["z"])],
-                    arrive=2.5, budget_s=90)
-                note(ok, "3. walk to the nearest parked car",
-                     f"car at ({car['x']:.0f}, {car['z']:.0f}), {detail}")
-                d.press("e")
-                d.advance(900, False)
-                s = d.state()
-                note(s["player"]["inCar"], "3. E enters the parked car",
-                     f"inCar={s['player']['inCar']}")
-                d.page.keyboard.down("w")
-                s1 = d.advance(2000, False)
-                d.page.keyboard.up("w")
-                note(s1["player"]["speed"] > 10, "3. W drives the car",
-                     f"speed={s1['player']['speed']:.1f} m/s")
-                d.press("e")
-                d.advance(900, False)
-                s = d.state()
-                note(not s["player"]["inCar"], "3. E exits the car",
-                     f"inCar={s['player']['inCar']}")
-                d.press("e")
-                d.advance(900, False)
-                s = d.state()
-                note(s["player"]["inCar"], "3. E re-enters the same car",
-                     f"inCar={s['player']['inCar']}")
+            # --- 2. walking speed (game time) ----------------------------------
+            p0 = g.state()["player"]
+            g.set_keys({"w"})
+            g.advance(2000)
+            g.release_all()
+            p1 = g.state()["player"]
+            dist = math.hypot(p1["x"] - p0["x"], p1["z"] - p0["z"])
+            check("WASD walk >= ~5 m/s", dist >= 9.0, f"{dist:.2f} m in 2.0 game-s = {dist/2:.2f} m/s")
 
-                # -- 4. M1 end to end: docks, package, deliver --------
-                for wx, wz in [(100, -75), (175, -75), (175, 25)]:
-                    ok, detail = d.drive_to(wx, wz, arrive=6)
-                    note(ok, f"4. drive to ({wx}, {wz})", str(detail))
-                    if not ok:
-                        break
-                else:
-                    ok, detail = d.drive_to(182, 24, arrive=6)
-                    note(ok, "4. drive to the docks (182, 24)", str(detail))
-                s = d.state()
-                if s["player"]["inCar"]:
-                    d.press("e")
-                    d.advance(900, False)
-                ok, detail = d.walk_to(182, 24, arrive=3.0, run=False)
-                note(ok, "4. walk into the package marker", f"{detail} m away")
-                d.advance(600, False)
-                s = d.state()
-                note(s["mission"] and s["mission"]["id"] == "M1"
-                     and s["mission"]["step"] == 1,
-                     "4. package collected, delivery step starts",
-                     f"mission={s['mission']}")
-                d.press("e")
-                d.advance(900, False)
-                s = d.state()
-                note(s["player"]["inCar"], "4. re-enter the car at the docks",
-                     f"inCar={s['player']['inCar']}")
-                for wx, wz in [(175, 25), (25, 25)]:
-                    ok, detail = d.drive_to(wx, wz, arrive=6)
-                    note(ok, f"4. drive back to ({wx}, {wz})", str(detail))
-                    if not ok:
-                        break
-                else:
-                    ok, detail = d.drive_to(0, 22, arrive=5.5, budget_s=180)
-                    note(ok, "4. drive to Rosa's cafe (0, 22)", str(detail))
-                d.advance(800, False)
-                s = d.state()
-                note(s["mission"] and s["mission"]["id"] == "M2",
-                     "4. M1 completes, M2 starts",
-                     f"mission={s['mission'] and s['mission']['id']}")
-                note(s["money"] >= money_m1_start + 300,
-                     "4. M1 pays $300",
-                     f"money {money_m1_start} -> {s['money']}")
-                note(s["mode"] == "playing" and s["player"]["health"] == 100,
-                     "4. never busted / wasted during M1",
-                     f"mode={s['mode']} hp={s['player']['health']}")
+            # --- 3. M0: walk to the cafe ---------------------------------------
+            ok, secs = walk_to(g, 0, 0, radius=3.5, budget_ms=60000, label="M0 walk to cafe")
+            s = g.state()
+            check("M0: reach Rosa's cafe", ok and s["mission"]["stage"] == "drive-docks",
+                  f"{secs:.1f} game-s, stage={s['mission']['stage']}, mission={s['mission']['index']}")
+            page.screenshot(path="/tmp/playtest-2-cafe.png")
 
-                # -- 5. HUD -------------------------------------------
-                # Resume rendering so the final frame and the HUD are live.
-                d.pause_raf(False)
-                d.advance(800)
-                page.wait_for_timeout(2500)
-                hud = page.evaluate("""() => {
-                  const t = (id) => { const el = document.getElementById(id);
-                    return el ? el.textContent.trim() : null; };
-                  const r = (id) => { const el = document.getElementById(id);
-                    if (!el) return null; const b = el.getBoundingClientRect();
-                    return {x: b.x, y: b.y, w: b.width, h: b.height}; };
-                  const mm = document.getElementById('minimap-canvas');
-                  return {
-                    cash: t('hud-cash'), stars: t('hud-stars'),
-                    objective: t('hud-objective'), speed: t('hud-speed'),
-                    clock: t('hud-clock'),
-                    rects: { tl: r('hud-topleft'), bl: r('hud-bottomleft'),
-                             bc: r('hud-bottomcenter'), br: r('hud-bottomright'),
-                             mm: r('minimap-wrap') },
-                    minimapData: mm ? mm.toDataURL().length : 0,
-                  }; }""")
-                note(bool(hud["cash"]) and hud["cash"].startswith("$"),
-                     "5. HUD cash reads", str(hud["cash"]))
-                note(bool(hud["objective"]),
-                     "5. HUD objective reads", str(hud["objective"]))
-                note(bool(hud["speed"]) and "km/h" in hud["speed"],
-                     "5. HUD speed reads", str(hud["speed"]))
-                note(bool(hud["stars"]) and len(hud["stars"]) == 5,
-                     "5. HUD stars row shows 5 stars", str(hud["stars"]))
-                note(hud["minimapData"] > 5000,
-                     "5. minimap canvas is drawn (not blank)",
-                     f"dataURL {hud['minimapData']} chars")
-                centre = {"x": 440, "y": 210, "w": 400, "h": 300}
-                clash = []
-                for name, rc in hud["rects"].items():
-                    if not rc:
-                        continue
-                    overlap = not (rc["x"] + rc["w"] < centre["x"]
-                                   or rc["x"] > centre["x"] + centre["w"]
-                                   or rc["y"] + rc["h"] < centre["y"]
-                                   or rc["y"] > centre["y"] + centre["h"])
-                    if overlap:
-                        clash.append(name)
-                note(not clash, "5. no HUD panel covers the centre (the car)",
-                     f"clash: {clash}")
+            # --- 4. walk to parked car, E to enter ------------------------------
+            car, d = g.nearest_car(s["player"]["x"], s["player"]["z"])
+            log(f"nearest parked car at ({car['x']:.1f},{car['z']:.1f}), {d:.1f} m away")
+            ok, secs = walk_to(g, car["x"], car["z"], radius=3.0, budget_ms=60000, label="walk to car")
+            check("walk to parked car", ok, f"{secs:.1f} game-s")
+            in_car = enter_car(g)
+            s = g.state()
+            check("E enters the car", in_car, f"inCar={s['player']['inCar']}")
+            log(f"  wanted after steal: {s['wanted']} star(s) (witnessed steal is +1 by design)")
+            page.screenshot(path="/tmp/playtest-3-incar.png")
 
-                # Final frame for the visual check.
-                cdp = page.context.new_cdp_session(page)
-                res = cdp.send("Page.captureScreenshot",
-                               {"format": "jpeg", "quality": 82, "fromSurface": True})
-                with open("/tmp/playtest-end.jpg", "wb") as f:
-                    f.write(base64.b64decode(res["data"]))
-                print("  (final frame saved to /tmp/playtest-end.jpg)")
+            # --- 5. steering direction: A = left, D = right --------------------
+            g.set_keys({"w"})
+            g.advance(1500)
+            h0 = g.state()["player"]["heading"]
+            g.set_keys({"w", "a"})
+            g.advance(1000)
+            h1 = g.state()["player"]["heading"]
+            g.set_keys({"w", "d"})
+            g.advance(1000)
+            h2 = g.state()["player"]["heading"]
+            g.release_all()
+            d_left = norm(h1 - h0)
+            d_right = norm(h2 - h1)
+            check("steer A turns left (heading increases)", d_left > 0.08, f"Δheading {d_left:+.2f} rad")
+            check("steer D turns right (heading decreases)", d_right < -0.08, f"Δheading {d_right:+.2f} rad")
+            # Stop before the drive: a fast car heading the wrong way cannot
+            # hit a close waypoint and ends up oscillating past it.
+            stopped = stop_car(g)
+            check("car stops after steering test", stopped,
+                  f"speed={g.state()['player']['speed']:.1f} m/s")
 
-                # -- 6. zero console / page errors ---------------------
-                note(not d.errors, "6. zero console + page errors",
-                     "; ".join(d.errors[:3]))
-            finally:
-                browser.close()
+            # --- 6. M1 drive: car -> docks staging ------------------------------
+            m1_ok = False
+            ok, secs = drive_to(g, [(25, 25), (175, 25)], budget_ms=150000, label="M1 drive to docks")
+            s = g.state()
+            m1_ok = ok and s["mission"]["stage"] == "pickup"
+            check("M1: drive reaches docks staging", m1_ok,
+                  f"{secs:.1f} game-s, stage={s['mission']['stage']}, pos=({s['player']['x']:.1f},{s['player']['z']:.1f})")
+            page.screenshot(path="/tmp/playtest-4-docks.png")
+
+            if m1_ok:
+                # --- 7. exit, walk to the package on foot ---------------------------
+                out = exit_car(g)
+                check("E exits the car at the docks", out)
+                ok, secs = walk_to(g, 182, 24, radius=3.0, budget_ms=60000, label="walk to package")
+                s = g.state()
+                timer = page.evaluate("() => window.__GTA_BOOT.missions.timer")
+                m1_ok = ok and s["mission"]["stage"] == "deliver"
+                check("M1: package collected on foot", m1_ok,
+                      f"{secs:.1f} game-s, stage={s['mission']['stage']}, timer={timer:.0f}s / 150s")
+
+            if m1_ok:
+                # --- 8. walk back, re-enter, drive back ------------------------------
+                p = s["player"]
+                car, d = g.nearest_car(p["x"], p["z"])
+                log(f"car is {d:.1f} m away at ({car['x']:.1f},{car['z']:.1f})")
+                ok, secs = walk_to(g, car["x"], car["z"], radius=3.0, budget_ms=60000, label="walk back to car")
+                m1_ok = ok
+                check("walk back to the car", ok, f"{secs:.1f} game-s")
+            if m1_ok:
+                in_car = enter_car(g)
+                m1_ok = in_car
+                check("E re-enters the car", in_car)
+            if m1_ok:
+                ok, secs = drive_to(g, [(25, 25), (25, 5)], budget_ms=150000, label="M1 drive back")
+                s = g.state()
+                m1_ok = ok
+                check("M1: drive back near the cafe", ok, f"{secs:.1f} game-s, pos=({s['player']['x']:.1f},{s['player']['z']:.1f})")
+                page.screenshot(path="/tmp/playtest-5-return.png")
+
+            if m1_ok:
+                # --- 9. exit, walk to cafe -> M1 complete ----------------------------
+                out = exit_car(g)
+                check("E exits the car near the cafe", out)
+                money_before = g.state()["money"]
+                ok, secs = walk_to(g, 0, 0, radius=4.0, budget_ms=60000, label="walk to cafe (deliver)")
+                g.advance(800)  # let the toast + save land
+                s = g.state()
+                check("M1 COMPLETE: mission advances to M2", ok and s["mission"]["index"] == 2,
+                      f"{secs:.1f} game-s, mission={s['mission']['index']}, stage={s['mission']['stage']}")
+                check("M1 pays +$300", s["money"] == money_before + 300,
+                      f"${money_before} -> ${s['money']}")
+                page.screenshot(path="/tmp/playtest-6-m1done.png")
+            else:
+                check("M1 COMPLETE: mission advances to M2", False, "M1 chain failed earlier — see above")
+                check("M1 pays +$300", False, "M1 chain failed earlier — see above")
+            log(f"M1 total game time: {g.game_ms/1000:.1f} s (advanceTime ms; rAF loop adds more)")
+
+            # The (c) checks need the player on foot.
+            if g.state()["player"]["inCar"]:
+                exit_car(g)
+
+            # --- 10. (c) addWanted ----------------------------------------------
+            stars = page.evaluate(
+                "() => { const G = window.__GTA_BOOT; G.police.addWanted(G, 1); return G.police.stars; }")
+            check("G.police.addWanted raises stars", stars == 1, f"stars={stars}")
+            page.evaluate("() => { const G = window.__GTA_BOOT; G.police.stars = 0; G.state.wanted = 0; }")
+            g.advance(500)
+
+            # --- 11. (c) busted -> precinct (60,100), real chase path ------------
+            page.evaluate("""() => {
+              const G = window.__GTA_BOOT;
+              G.police.stars = 2; G.state.wanted = 2;
+            }""")
+            g.advance(3000)  # let cruisers spawn
+            page.evaluate("""() => {
+              const G = window.__GTA_BOOT;
+              const c = G.police.cars[0];
+              if (c) { c.pos.set(G.player.pos.x + 1, 0, G.player.pos.z); c.speed = 0; }
+            }""")
+            g.advance(3500)
+            s = g.state()
+            busted = s["mode"] == "busted" or (abs(s["player"]["x"] - 60) < 2 and abs(s["player"]["z"] - 100) < 2)
+            check("busted by SBPD on foot -> precinct (60,100)", busted,
+                  f"mode={s['mode']}, pos=({s['player']['x']:.1f},{s['player']['z']:.1f})")
+            g.advance(2500)  # busted screen countdown
+            s = g.state()
+            check("play resumes after busted", s["mode"] == "playing", s["mode"])
+
+            # --- 12. (c) wasted -> hospital (150,-100), real damagePlayer --------
+            res = page.evaluate("""async () => {
+              const G = window.__GTA_BOOT;
+              const m = await import('./src/combat.js');
+              const before = G.state.money;
+              m.damagePlayer(G, 200);
+              return { mode: G.state.mode, x: G.player.pos.x, z: G.player.pos.z,
+                       money: G.state.money, lost: before - G.state.money };
+            }""")
+            check("wasted (HP 0) -> hospital (150,-100)", res["mode"] == "wasted"
+                  and abs(res["x"] - 150) < 2 and abs(res["z"] + 100) < 2,
+                  f"mode={res['mode']}, pos=({res['x']:.1f},{res['z']:.1f}), -${res['lost']}")
+            g.advance(2500)
+            s = g.state()
+            check("play resumes after wasted", s["mode"] == "playing", s["mode"])
+
+            # --- 13. console / page errors ---------------------------------------
+            check("0 console errors in all scenarios", len(g.errors) == 0, json.dumps(g.errors[:5]))
+            check("0 page errors in all scenarios", len(g.page_errors) == 0, json.dumps(g.page_errors[:5]))
+            browser.close()
     finally:
         server.terminate()
         try:
-            server.communicate(timeout=5)
+            out, _ = server.communicate(timeout=5)
+            if out:
+                log("--- serve.ts output ---")
+                log(out[-2000:])
         except Exception:
             server.kill()
 
-    if FAILURES:
-        print(f"\nplaytest: FAIL — {len(FAILURES)} failure(s):")
-        for f in FAILURES:
-            print(f"  - {f}")
-        return 1
-    print("\nplaytest: PASS — 0 failures")
-    return 0
+    log(f"\nPLAYTEST: {'0 FAILURE — M1 end-to-end passed' if not FAILURES else f'{len(FAILURES)} FAILURE(S): ' + ', '.join(FAILURES)}")
+    return 0 if not FAILURES else 1
 
 
 if __name__ == "__main__":

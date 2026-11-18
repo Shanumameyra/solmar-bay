@@ -1,189 +1,101 @@
-// minimap.js — Solmar Bay minimap (160x160 canvas, north-up).
-// Per DESIGN.md: streets, beach, player arrow (white), traffic (grey dots),
-// police (blue/red flashing), mission marker (yellow pulsing), taxi
-// customer (green), cash pickup (gold).
-// Draws into a canvas it creates itself and mounts into the HUD's
-// #minimap-wrap. Throttled to ~15 fps (cheap 2D draws, but no need for 60).
-// Safe no-op stub when there is no document (Node tests).
-
-const SIZE = 160;
-const WORLD = 400; // world spans -200..+200 m on both axes
-const STREETS = [-175, -125, -75, -25, 25, 75, 125, 175];
-
-function stubMinimap() {
-  return { update() {}, draw() {}, canvas: null };
+// minimap.js — Solmar Bay 160x160 north-up minimap (Worker B, v6 fresh)
+// Contract: createMinimap(G) / drawMinimap(G)
+// Roads, beach, player arrow (white), traffic (grey), police (blue/red flashing),
+// mission marker (yellow pulsing), taxi (green), cash pickup (gold).
+export function createMinimap(G) {
+  let canvas = null;
+  if (typeof document !== 'undefined') {
+    canvas = document.getElementById('minimap');
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.id = 'minimap';
+      canvas.width = 160; canvas.height = 160;
+      const root = document.getElementById('hud') || document.body;
+      root.appendChild(canvas);
+    }
+  }
+  const mm = { canvas, ctx: canvas ? canvas.getContext('2d') : null, _t: 0 };
+  return mm;
 }
 
-export function createMinimap(G) {
-  if (typeof document === 'undefined') return stubMinimap();
+export function drawMinimap(G) {
+  const mm = G.minimap;
+  if (!mm || !mm.ctx) return;
+  const ctx = mm.ctx;
+  const W = 160, H = 160;
+  mm._t += 1 / 60;
+  const t = mm._t;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = SIZE;
-  canvas.height = SIZE;
-  canvas.id = 'minimap-canvas';
-  const mount = G && G.hud && G.hud.minimapWrap;
-  if (mount) mount.appendChild(canvas);
-  else document.body.appendChild(canvas);
-  const ctx = canvas.getContext('2d');
+  const B = (G.world && G.world.bounds) || { min: -200, max: 200 };
+  const span = B.max - B.min;
+  const sx = (x) => ((x - B.min) / span) * W;
+  const sz = (z) => ((z - B.min) / span) * H;
 
-  let acc = 0;
-  let flash = 0;
+  // Background: land.
+  ctx.fillStyle = '#12233a';
+  ctx.fillRect(0, 0, W, H);
+  // Beach (west strip) + sea.
+  ctx.fillStyle = '#c2a878';
+  ctx.fillRect(0, 0, sx(-150) > 0 ? sx(-150) : 8, H);
+  ctx.fillStyle = '#1d4e6b';
+  ctx.fillRect(0, 0, 6, H);
 
-  function toMap(x, z) {
-    return [
-      ((x + WORLD / 2) / WORLD) * SIZE,
-      ((z + WORLD / 2) / WORLD) * SIZE,
-    ];
+  // Streets (grid).
+  const lines = (G.world && G.world.streets) || [-175, -125, -75, -25, 25, 75, 125, 175];
+  ctx.strokeStyle = '#3a4d63';
+  ctx.lineWidth = 2;
+  for (const L of lines) {
+    ctx.beginPath(); ctx.moveTo(sx(L), 0); ctx.lineTo(sx(L), H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, sz(L)); ctx.lineTo(W, sz(L)); ctx.stroke();
   }
 
-  function playerPos() {
-    if (G && typeof G.getPlayerPos === 'function') {
-      const p = G.getPlayerPos();
-      if (p) return p;
-    }
-    if (G && G.player && G.player.pos) return G.player.pos;
-    return { x: 0, y: 0, z: 0 };
-  }
-
-  function drawBase() {
-    // Land.
-    ctx.fillStyle = '#2d3a2e';
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    // Beach (west strip) + water.
-    const [bx] = toMap(-200, 0);
-    const [sx] = toMap(-175, 0);
-    ctx.fillStyle = '#1d4e89';
-    ctx.fillRect(0, 0, Math.max(0, bx + 8), SIZE);
-    ctx.fillStyle = '#d9c27a';
-    ctx.fillRect(Math.max(0, bx + 8), 0, Math.max(0, sx - bx - 8), SIZE);
-    // Docks (east strip).
-    const [dx] = toMap(165, 0);
-    ctx.fillStyle = '#3a3f46';
-    ctx.fillRect(dx, 0, SIZE - dx, SIZE);
-    // Streets.
-    ctx.strokeStyle = '#4a4a52';
-    ctx.lineWidth = 2;
-    for (const s of STREETS) {
-      const [mx] = toMap(s, 0);
-      ctx.beginPath();
-      ctx.moveTo(mx, 0);
-      ctx.lineTo(mx, SIZE);
-      ctx.stroke();
-      const [, mz] = toMap(0, s);
-      ctx.beginPath();
-      ctx.moveTo(0, mz);
-      ctx.lineTo(SIZE, mz);
-      ctx.stroke();
-    }
-    // Plaza.
-    const [px, pz] = toMap(0, 0);
-    ctx.fillStyle = '#6b5d3f';
-    ctx.fillRect(px - 9, pz - 9, 18, 18);
-  }
-
-  function dot(x, z, r, color) {
-    const [mx, mz] = toMap(x, z);
+  const dot = (x, z, r, color) => {
     ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(mx, mz, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  function draw() {
-    if (!G) return;
-    flash += 0.016;
-    drawBase();
-
-    // Cash pickups (gold) — only if the world exposes them.
-    const pickups = (G && G.cashPickups) || [];
-    for (const pk of pickups) {
-      if (!pk || pk.taken) continue;
-      dot(pk.x, pk.z, 2.5, '#ffd700');
-    }
-
-    // Traffic (grey dots).
-    const traffic = [];
-    if (G && G.traffic && Array.isArray(G.traffic.cars)) traffic.push(...G.traffic.cars);
-    if (G && Array.isArray(G.trafficCars)) traffic.push(...G.trafficCars);
-    for (const car of traffic) {
-      const pos = car.pos || car;
-      if (pos && typeof pos.x === 'number') dot(pos.x, pos.z, 2, '#9aa0a6');
-    }
-
-    // Taxi customer (green).
-    if (G.missions && G.missions.taxi && G.missions.taxi.active) {
-      const t = G.missions.taxi;
-      const pos = t.phase === 'pickup' ? t.customerPos : t.destPos;
-      if (pos) dot(pos.x, pos.z, 3, '#22ff88');
-    }
-
-    // Mission marker (yellow pulsing).
-    if (G.missions && typeof G.missions.markerPos === 'function') {
-      const m = G.missions.markerPos();
-      if (m) {
-        const pulse = 3 + Math.sin(flash * 6) * 1.2;
-        dot(m.x, m.z, pulse, '#ffd21f');
-        const [mx, mz] = toMap(m.x, m.z);
-        ctx.strokeStyle = '#ffd21f';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(mx, mz, pulse + 3, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-
-    // Police (blue/red flashing).
-    if (G.police && Array.isArray(G.police.cars)) {
-      const red = Math.floor(flash * 4) % 2 === 0;
-      for (const car of G.police.cars) {
-        if (car && car.pos) dot(car.pos.x, car.pos.z, 3, red ? '#ff3333' : '#3388ff');
-      }
-    }
-    if (G.police && Array.isArray(G.police.footCops)) {
-      for (const cop of G.police.footCops) {
-        if (cop && cop.pos) dot(cop.pos.x, cop.pos.z, 2.5, '#3388ff');
-      }
-    }
-
-    // Player arrow (white), rotated by heading. North-up map, heading 0
-    // faces +z (south on the map) so the arrow rotates by heading + PI.
-    const p = playerPos();
-    const [mx, mz] = toMap(p.x, p.z);
-    const heading = (G && G.player && typeof G.player.heading === 'number')
-      ? G.player.heading
-      : 0;
-    ctx.save();
-    ctx.translate(mx, mz);
-    ctx.rotate(heading + Math.PI);
-    ctx.fillStyle = '#ffffff';
-    ctx.strokeStyle = '#111111';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, -6);
-    ctx.lineTo(4, 5);
-    ctx.lineTo(-4, 5);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-
-    // Border.
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0.5, 0.5, SIZE - 1, SIZE - 1);
-  }
-
-  const api = {
-    canvas,
-    draw,
-    update(dt) {
-      acc += dt || 0.016;
-      if (acc >= 1 / 15) {
-        acc = 0;
-        draw();
-      }
-    },
+    ctx.beginPath(); ctx.arc(sx(x), sz(z), r, 0, Math.PI * 2); ctx.fill();
   };
 
-  return api;
+  // Cash pickups (gold), if the world has any.
+  for (const c of (G.world && G.world.cashPickups) || []) dot(c.x, c.z, 2.5, '#ffd21f');
+
+  // Taxi customer (green).
+  const M = G.missions;
+  if (M && M._taxi && M.marker && M.marker.label === 'taxi') dot(M.marker.x, M.marker.z, 3.5, '#37c978');
+
+  // Mission marker (yellow, pulsing).
+  if (M && M.marker) {
+    const r = 4 + Math.sin(t * 5) * 1.5;
+    ctx.strokeStyle = '#ffd21f';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx(M.marker.x), sz(M.marker.z), r, 0, Math.PI * 2); ctx.stroke();
+    dot(M.marker.x, M.marker.z, 2.5, '#ffd21f');
+  }
+
+  // Traffic (grey dots).
+  for (const c of ((G.traffic && G.traffic.cars) || [])) dot(c.pos.x, c.pos.z, 2, '#9aa7b5');
+  for (const c of ((G.traffic && G.traffic.parked) || [])) dot(c.pos.x, c.pos.z, 2, '#6b7a89');
+
+  // Police (blue/red flashing).
+  const flash = Math.floor(t * 4) % 2 === 0;
+  for (const c of ((G.police && G.police.cars) || [])) {
+    dot(c.pos.x, c.pos.z, 3, flash ? '#3b82f6' : '#ef4444');
+  }
+
+  // Player arrow (white), rotated by heading.
+  const p = G.player;
+  if (p && p.pos) {
+    const h = p.car ? p.car.heading : (p.heading || 0);
+    ctx.save();
+    ctx.translate(sx(p.pos.x), sz(p.pos.z));
+    ctx.rotate(h);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(0, -6); ctx.lineTo(4, 5); ctx.lineTo(0, 2.5); ctx.lineTo(-4, 5);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  // Border.
+  ctx.strokeStyle = '#ffffff55';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
 }

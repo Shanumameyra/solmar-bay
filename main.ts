@@ -1,24 +1,25 @@
-// main.ts — Solmar Bay entry builder (make.fun competition gta6-01).
+// main.ts — hands SOLMAR BAY in for make.fun gta6-01.
+// Node 22, standard library only, erasable TypeScript: runs as-is under
+// `node main.ts`, no flags, no build, no install.
 //
-// Copies the game and its screenshots into the output directory and writes
-// dossier.json with the kit's buildDossier, byte-identical on every run.
-// Node 22 standard library only, no build step, no network.
+// Copies game/ and screenshots/ from this repository to /output (or
+// $MAKEFUN_OUTPUT_DIR outside the grader) and writes /output/dossier.json
+// with buildDossier from vendor/makefun-game.ts, using the bounty gate caps.
+// Two runs write identical bytes.
 //
-//   MAKEFUN_OUTPUT_DIR=/output node main.ts
-//
-// The output directory defaults to /output. Only the game/, screenshots/
-// and dossier.json entries inside it are touched.
+//   node main.ts
+//   MAKEFUN_OUTPUT_DIR=/tmp/out node main.ts   # test run
 
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
-const OUT_DIR = process.env.MAKEFUN_OUTPUT_DIR || '/output';
-
-// The caps the bounty scorer passes to buildDossier (from its gate.json).
+// The gate's caps (competition.yaml / reference/gate.json, best-game-01's):
+// game/ at most 993 files and directories together and 48 MiB in all, each
+// path at most 1,000 UTF-8 bytes, game/index.html at most 1 MiB, 3 to 4
+// screenshots of at most 256 KiB, the dossier at most 1.5 MiB and its text
+// at most 163,840 bytes (160 KiB).
 const CAPS = {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
@@ -27,32 +28,18 @@ const CAPS = {
   game_path_max_bytes: 1000,
 };
 
-function copyEntry(name: string): void {
-  const src = join(REPO_ROOT, name);
-  const dst = join(OUT_DIR, name);
-  if (!existsSync(src)) {
-    throw new Error(`missing ${name}/ in ${REPO_ROOT}`);
-  }
-  // cpSync refuses to copy a symlink target by default; dereference is
-  // off, so a symlink inside the tree fails loudly instead of smuggling
-  // an outside file into the bundle.
-  cpSync(src, dst, { recursive: true, dereference: false });
-}
+const repo = dirname(fileURLToPath(import.meta.url));
+const out = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 
-function main(): void {
-  mkdirSync(OUT_DIR, { recursive: true });
-  rmSync(join(OUT_DIR, 'game'), { recursive: true, force: true });
-  rmSync(join(OUT_DIR, 'screenshots'), { recursive: true, force: true });
-  rmSync(join(OUT_DIR, 'dossier.json'), { force: true });
+// Start from a clean output directory so a stale file can never leak into
+// the entry; the grader runs this in a fresh container either way.
+rmSync(out, { recursive: true, force: true });
+mkdirSync(out, { recursive: true });
 
-  copyEntry('game');
-  copyEntry('screenshots');
+cpSync(join(repo, 'game'), join(out, 'game'), { recursive: true });
+cpSync(join(repo, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 
-  const dossier = buildDossier(OUT_DIR, CAPS);
-  writeFileSync(join(OUT_DIR, 'dossier.json'), dossier);
+const dossier = buildDossier(out, CAPS);
+writeFileSync(join(out, 'dossier.json'), dossier);
 
-  console.log(`wrote ${join(OUT_DIR, 'dossier.json')} (${dossier.length} bytes)`);
-  console.log(`game/ + screenshots/ copied to ${OUT_DIR}`);
-}
-
-main();
+console.log(`SOLMAR BAY entry written to ${out} (dossier.json ${dossier.length} bytes)`);

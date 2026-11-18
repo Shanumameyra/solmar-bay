@@ -1,24 +1,20 @@
-// serve.ts — Solmar Bay: a tiny static file server for local playtesting.
-// Node 22 standard library only, no dependencies. Serves the game/ folder
-// at the web root, so game/index.html opens at http://localhost:8080/ and
-// every relative file under game/ resolves exactly as the gate serves it.
+// serve.ts — static file server for SOLMAR BAY (local play / QA).
+// Node 22, standard library only. Serves game/ and nothing else.
 //
-//   node serve.ts            serves on port 8080
-//   node serve.ts 8931       serves on port 8931
-//   PORT=8931 node serve.ts  same, via the environment
+//   node serve.ts [port] [game-dir]
+//   PORT env also works. Default port 8080, default dir ./game.
 //
-// Nothing here is part of the entry itself (main.ts is the entrypoint);
-// this file exists so a human or a test script can open the game locally.
+// The finalist review serves game/ with a static server and opens index.html
+// in desktop Chrome; this is the same shape: no directory listing, no path
+// traversal (every resolved path must stay under the game dir), correct MIME
+// types, index.html at /.
 
 import { createServer } from 'node:http';
-import { readFileSync, existsSync, statSync } from 'node:fs';
-import { join, dirname, extname, resolve, sep } from 'node:path';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), 'game');
-const PORT = Number(process.argv[2] || process.env.PORT || 8080);
-
-const TYPES = {
+const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -28,39 +24,64 @@ const TYPES = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
-  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
   '.wasm': 'application/wasm',
-  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
 };
 
+const here = fileURLToPath(new URL('.', import.meta.url));
+const gameDir = resolve(process.argv[3] || process.env.GAME_DIR || join(here, 'game'));
+const port = Number(process.argv[2] || process.env.PORT || 8080);
+
+if (!existsSync(gameDir) || !statSync(gameDir).isDirectory()) {
+  console.error(`serve.ts: no game directory at ${gameDir}`);
+  process.exit(1);
+}
+if (!existsSync(join(gameDir, 'index.html'))) {
+  console.error(`serve.ts: ${gameDir} holds no index.html`);
+  process.exit(1);
+}
+
 const server = createServer((req, res) => {
-  try {
-    const raw = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
-    let target = resolve(join(ROOT, raw));
-    // Never serve anything outside game/ (no climbing out with ..).
-    if (target !== ROOT && !target.startsWith(ROOT + sep)) {
-      res.writeHead(403, { 'content-type': 'text/plain' });
-      res.end('forbidden\n');
-      return;
-    }
-    if (existsSync(target) && statSync(target).isDirectory()) {
-      target = join(target, 'index.html');
-    }
-    if (!existsSync(target) || !statSync(target).isFile()) {
-      res.writeHead(404, { 'content-type': 'text/plain' });
-      res.end('not found\n');
-      return;
-    }
-    const type = TYPES[extname(target).toLowerCase()] || 'application/octet-stream';
-    res.writeHead(200, { 'content-type': type });
-    res.end(readFileSync(target));
-  } catch (err) {
-    res.writeHead(500, { 'content-type': 'text/plain' });
-    res.end(`error: ${err && err.message ? err.message : err}\n`);
+  const raw = decodeURIComponent((req.url || '/').split('?')[0].split('#')[0]);
+  const rel = raw === '/' ? 'index.html' : raw.replace(/^\/+/, '');
+  const file = resolve(join(gameDir, rel));
+  if (file !== gameDir && !file.startsWith(gameDir + sep)) {
+    res.writeHead(403, { 'content-type': 'text/plain' });
+    res.end('forbidden\n');
+    return;
   }
+  let path = file;
+  try {
+    if (statSync(path).isDirectory()) path = join(path, 'index.html');
+  } catch {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found\n');
+    return;
+  }
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found\n');
+    return;
+  }
+  if (!st.isFile()) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found\n');
+    return;
+  }
+  res.writeHead(200, {
+    'content-type': MIME[extname(path).toLowerCase()] || 'application/octet-stream',
+    'content-length': st.size,
+    'cache-control': 'no-store',
+  });
+  createReadStream(path).pipe(res);
 });
 
-server.listen(PORT, () => {
-  console.log(`Solmar Bay serving game/ at http://localhost:${PORT}/`);
+server.listen(port, '127.0.0.1', () => {
+  console.log(`SOLMAR BAY served at http://127.0.0.1:${port}/  (game dir: ${gameDir})`);
 });
