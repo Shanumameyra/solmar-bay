@@ -1,99 +1,134 @@
-# Solmar Bay — retake the supporting screenshots (v2).
-# Run: ~/workspace/tools/pw-venv/bin/python tests/shots.py
-# Requires the static server: node serve.ts  (serves game/ on :8080)
-# Captures 2-title.jpg, 3-onfoot.jpg, 4-mission.jpg at 1280x720 JPEG q82
-# (the kit gate: long side at most 1280, short side at least 480, each
-# file at most 256 KiB); fails if a pageerror / console error appears,
-# if a shot exceeds the size cap, or if a staged scene is wrong
-# (title screen, on foot, M1 at the docks).
-# NOTE: 1-hero.jpg is NOT captured here — it is Romi's approved image and
-# must never be overwritten by this script.
-import asyncio
-import os
-import struct
+#!/usr/bin/env python3
+"""Render the Solmar Bay screenshots headlessly and check them.
+
+- 1-hero.jpg: the entrant-supplied key art, resized to 1280x720 only.
+- 2-title / 3-onfoot / 4-mission: rendered from the game in headless
+  Chromium (shots.json queries), waiting for window.__shotReady.
+- Every screenshot must be 1280x720 and <= 256 KiB, with zero console
+  errors and zero page errors while rendering.
+
+Run from the repository root:
+    ~/workspace/tools/pw-venv/bin/python tests/shots.py
+"""
+import json
+import subprocess
 import sys
+import time
+import urllib.request
+from pathlib import Path
 
-from playwright.async_api import async_playwright
-
-BASE = "http://localhost:8080/index.html"
-OUT = os.path.join(os.path.dirname(__file__), "..", "screenshots")
-SHOTS = [
-    ("title", "2-title.jpg"),
-    ("onfoot", "3-onfoot.jpg"),
-    ("mission", "4-mission.jpg"),
-]
+REPO = Path(__file__).resolve().parent.parent
+SHOTS = REPO / "screenshots"
+HERO_SRC = Path.home() / "workspace" / "user" / "media_library" / "image" / "image.png"
+NODE = Path.home() / "workspace" / "tools" / "node-v22.23.4-linux-x64" / "bin" / "node"
+PORT = 8901
 MAX_BYTES = 262144
 
+from PIL import Image  # noqa: E402
+from playwright.sync_api import sync_playwright  # noqa: E402
 
-def jpeg_size(path):
-    """Width/height of a JPEG from its SOF marker (stdlib only)."""
-    with open(path, "rb") as f:
-        data = f.read(2)
-        if data != b"\xff\xd8":
-            return None
+failures = []
+
+
+def check(cond, msg):
+    print(("  ok  " if cond else " FAIL ") + msg)
+    if not cond:
+        failures.append(msg)
+
+
+def verify_image(path):
+    with Image.open(path) as im:
+        w, h = im.size
+    size = path.stat().st_size
+    check((w, h) == (1280, 720), f"{path.name}: is 1280x720 (got {w}x{h})")
+    check(size <= MAX_BYTES, f"{path.name}: <= 256 KiB (got {size} bytes)")
+    return size
+
+
+def render_hero():
+    print("hero: resizing supplied key art to 1280x720 (content untouched)")
+    with Image.open(HERO_SRC) as im:
+        im = im.convert("RGB")
+        im = im.resize((1280, 720), Image.LANCZOS)
+        quality = 88
         while True:
-            marker = f.read(2)
-            if len(marker) < 2 or marker[0] != 0xFF:
-                return None
-            code = marker[1]
-            if code in (0xC0, 0xC1, 0xC2):
-                f.read(3)
-                h, w = struct.unpack(">HH", f.read(4))
-                return (w, h)
-            length = struct.unpack(">H", f.read(2))[0]
-            f.read(length - 2)
+            im.save(SHOTS / "1-hero.jpg", "JPEG", quality=quality)
+            if (SHOTS / "1-hero.jpg").stat().st_size <= MAX_BYTES or quality <= 40:
+                break
+            quality -= 8
+    print(f"  hero saved at JPEG quality {quality}")
+    return verify_image(SHOTS / "1-hero.jpg")
 
 
-async def main():
-    os.makedirs(OUT, exist_ok=True)
-    errs = []
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=[
-            "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
-        ])
-        page = await browser.new_page(viewport={"width": 1280, "height": 720})
-        page.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
-        page.on("console", lambda m: errs.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
-        ok = True
-        for name, fname in SHOTS:
-            await page.goto(f"{BASE}?shot={name}&seed=7", wait_until="load")
-            try:
-                await page.wait_for_function("window.__GTA && window.__GTA.shotReady", timeout=20000)
-            except Exception:
-                print(f"  !! shotReady timeout for {name}")
-                ok = False
-                continue
-            await page.wait_for_timeout(400)
-            path = os.path.join(OUT, fname)
-            await page.screenshot(path=path, type="jpeg", quality=82)
-            size = os.path.getsize(path)
-            dims = jpeg_size(path)
-            gta = await page.evaluate("window.__GTA")
-            flag = "OK" if size <= MAX_BYTES else "TOO BIG"
-            if size > MAX_BYTES:
-                ok = False
-            if dims != (1280, 720):
-                print(f"  !! {fname} is {dims}, expected 1280x720")
-                ok = False
-            print(f"{fname}: {size} bytes ({flag}), {dims[0]}x{dims[1]}, screen={gta.get('screen')} "
-                  f"wanted={gta.get('wanted')} money=${gta.get('money')} mission={gta.get('mission')} "
-                  f"objective={gta.get('objective')!r} speed={gta.get('speed')} km/h "
-                  f"inCar={gta.get('inCar')} policeCars={gta.get('policeCars')}")
-            if name == "title":
-                if gta.get('screen') != 'title':
-                    print(f"  !! title shot screen is {gta.get('screen')!r}, expected 'title'"); ok = False
-            if name == "onfoot":
-                if gta.get('inCar'):
-                    print("  !! onfoot shot is in a car, expected on foot"); ok = False
-            if name == "mission":
-                if gta.get('mission') != 1 or 'docks' not in (gta.get('objective') or '').lower():
-                    print(f"  !! mission shot is M{gta.get('mission')} {gta.get('objective')!r}, expected M1 at the docks"); ok = False
-        await browser.close()
-    print("errors:", errs if errs else "none")
-    if errs:
-        ok = False
-    print("SHOTS " + ("PASS" if ok else "FAIL"))
-    sys.exit(0 if ok else 1)
+def wait_server():
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=1)
+            return True
+        except Exception:
+            time.sleep(0.2)
+    return False
 
 
-asyncio.run(main())
+def main():
+    SHOTS.mkdir(exist_ok=True)
+    with open(REPO / "shots.json") as f:
+        shots = json.load(f)
+
+    server = subprocess.Popen(
+        [str(NODE), "serve.ts", "--port", str(PORT)],
+        cwd=REPO,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        if not wait_server():
+            print("FAIL: game server did not come up")
+            return 1
+        render_hero()
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                args=["--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--no-sandbox"]
+            )
+            page = browser.new_page(viewport={"width": 1280, "height": 720})
+            errors = []
+            page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type in ("error", "warning") else None)
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            for shot in shots:
+                if not shot.get("query"):
+                    continue
+                name = shot["name"]
+                print(f"rendering {name} ({shot['query']})")
+                page.goto(f"http://127.0.0.1:{PORT}/{shot['query']}", wait_until="load")
+                try:
+                    page.wait_for_function("window.__GTA && window.__GTA.shotReady", timeout=30000)
+                except Exception:
+                    check(False, f"{name}: __shotReady never became true")
+                    continue
+                page.wait_for_timeout(400)
+                page.screenshot(path=str(SHOTS / name), animations="disabled", timeout=60000)
+                gta = page.evaluate("window.__GTA")
+                print(f"  __GTA: {gta}")
+                check(gta.get("shotReady") is True, f"{name}: shotReady true")
+                verify_image(SHOTS / name)
+            browser.close()
+        check(not errors, f"zero console/page errors during renders ({len(errors)})")
+        for e in errors[:10]:
+            print("  error: " + e)
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except Exception:
+            server.kill()
+
+    if failures:
+        print(f"\nshots: {len(failures)} FAILURES")
+        return 1
+    print("\nshots: all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

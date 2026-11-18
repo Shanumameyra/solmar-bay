@@ -1,142 +1,91 @@
-// save.js — localStorage save/load, versioned, with a .bak fallback.
-//
-// Key: solmar-bay-save-v1 (+ '.bak'). Writes rotate the previous save to
-// .bak first, so a crash mid-write never destroys progress. Loads try the
-// .bak even when the primary parses as "newer" — a newer primary used to
-// block the fallback outright. Defensive parse + validation throughout.
+// Save — localStorage, key solmar-bay-save-v1, with a .bak fallback copy
+// and defensive parsing (a corrupt save must never break boot).
 
 export const SAVE_KEY = 'solmar-bay-save-v1';
-export const SAVE_VERSION = 1;
+const BAK_KEY = `${SAVE_KEY}.bak`;
 
-function defaultStorage() {
+function storage() {
   try {
-    return typeof localStorage !== 'undefined' ? localStorage : null;
+    if (typeof localStorage !== 'undefined') return localStorage;
+  } catch (e) { /* storage unavailable (private mode, SSR) */ }
+  return null;
+}
+
+function parseDefensive(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object') return null;
+    return obj;
   } catch (e) {
     return null;
   }
 }
 
-function num(v, fallback) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function sanitize(d) {
-  if (!d || typeof d !== 'object') return null;
-  if (d.version !== SAVE_VERSION) return null;
+function normalize(obj) {
   return {
-    version: SAVE_VERSION,
-    money: Math.max(0, num(d.money, 150)),
-    missionIndex: Math.max(0, Math.min(3, Math.floor(num(d.missionIndex, 0)))),
-    missionsDone: Math.max(0, Math.floor(num(d.missionsDone, 0))),
-    carsStolen: Math.max(0, Math.floor(num(d.carsStolen, 0))),
-    busted: Math.max(0, Math.floor(num(d.busted, 0))),
-    deaths: Math.max(0, Math.floor(num(d.deaths, 0))),
-    bestCash: Math.max(0, num(d.bestCash, 0)),
-    muted: !!d.muted,
-    seed: Math.floor(num(d.seed, 7)),
-    savedAt: num(d.savedAt, 0),
+    money: typeof obj.money === 'number' ? obj.money : 0,
+    missionIndex: typeof obj.missionIndex === 'number' ? obj.missionIndex : 0,
+    stats: {
+      missionsDone: typeof obj.stats?.missionsDone === 'number' ? obj.stats.missionsDone : 0,
+      carsStolen: typeof obj.stats?.carsStolen === 'number' ? obj.stats.carsStolen : 0,
+      busted: typeof obj.stats?.busted === 'number' ? obj.stats.busted : 0,
+      bestCash: typeof obj.stats?.bestCash === 'number' ? obj.stats.bestCash : 0,
+    },
+    muted: !!obj.muted,
   };
 }
 
-// Parse one raw slot: {data} when it is a valid v1 save, {newer:true}
-// when it parses but comes from a newer build, null otherwise.
-function parseSlot(raw) {
-  if (raw == null) return null;
-  let d;
-  try {
-    d = JSON.parse(raw);
-  } catch (e) {
-    return null;
-  }
-  if (!d || typeof d !== 'object') return null;
-  if (d.version > SAVE_VERSION) return { newer: true };
-  const clean = sanitize(d);
-  return clean ? { data: clean } : null;
-}
-
-export function captureSave(state) {
-  const stats = state.stats || {};
-  return {
-    version: SAVE_VERSION,
-    money: state.money ?? 150,
-    missionIndex: state.mission?.index ?? 0,
-    missionsDone: stats.missionsDone ?? 0,
-    carsStolen: stats.carsStolen ?? 0,
-    busted: stats.busted ?? 0,
-    deaths: stats.deaths ?? 0,
-    bestCash: Math.max(stats.bestCash ?? 0, state.money ?? 0),
-    muted: !!state.muted,
-    seed: state.seed ?? 7,
-    savedAt: Date.now(),
-  };
-}
-
-export function saveGame(state, storage) {
-  const store = storage || defaultStorage();
-  if (!store) return false;
-  try {
-    const data = captureSave(state);
-    const prev = store.getItem(SAVE_KEY);
-    if (prev != null) store.setItem(SAVE_KEY + '.bak', prev);
-    store.setItem(SAVE_KEY, JSON.stringify(data));
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-export function loadSave(storage) {
-  const store = storage || defaultStorage();
-  if (!store) return { ok: false, empty: true };
+export function loadSave() {
+  const store = storage();
+  if (!store) return null;
   let raw = null;
-  try {
-    raw = store.getItem(SAVE_KEY);
-  } catch (e) {
-    raw = null;
+  try { raw = store.getItem(SAVE_KEY); } catch (e) { return null; }
+  let parsed = parseDefensive(raw);
+  if (!parsed) {
+    // Fall back to the backup copy.
+    try { raw = store.getItem(BAK_KEY); } catch (e) { raw = null; }
+    parsed = parseDefensive(raw);
+    if (!parsed) return null;
   }
-  const primary = parseSlot(raw);
-  if (primary && primary.data) return { ok: true, data: primary.data };
-  // Fall back to .bak — even when the primary is "newer".
-  let bakRaw = null;
-  try {
-    bakRaw = store.getItem(SAVE_KEY + '.bak');
-  } catch (e) {
-    bakRaw = null;
-  }
-  const bak = parseSlot(bakRaw);
-  if (bak && bak.data) return { ok: true, data: bak.data, fromBak: true };
-  if ((primary && primary.newer) || (bak && bak.newer)) return { ok: false, newer: true };
-  return { ok: false, empty: true };
+  return normalize(parsed);
 }
 
-export function hasSave(storage) {
-  return loadSave(storage).ok;
-}
-
-export function clearSave(storage) {
-  const store = storage || defaultStorage();
+export function saveGame(S) {
+  const store = storage();
   if (!store) return false;
+  const player = S.player || {};
+  const money = typeof player.money === 'number' ? player.money : (typeof S.money === 'number' ? S.money : 0);
+  const stats = (S.save && S.save.stats) || {};
+  const data = normalize({
+    money,
+    missionIndex: S.missions ? S.missions.index : 0,
+    stats: {
+      missionsDone: stats.missionsDone || 0,
+      carsStolen: stats.carsStolen || 0,
+      busted: stats.busted || 0,
+      bestCash: Math.max(stats.bestCash || 0, money),
+    },
+    muted: !!(S.audio && S.audio.muted),
+  });
   try {
-    store.removeItem(SAVE_KEY);
-    store.removeItem(SAVE_KEY + '.bak');
+    const prev = store.getItem(SAVE_KEY);
+    if (prev) {
+      try { store.setItem(BAK_KEY, prev); } catch (e) { /* backup best-effort */ }
+    }
+    store.setItem(SAVE_KEY, JSON.stringify(data));
+    if (!S.save) S.save = {};
+    S.save.stats = data.stats;
+    S.save.data = data;
     return true;
   } catch (e) {
     return false;
   }
 }
 
-// Apply a loaded save to live state (data only — no live references).
-// Mission index is applied by main.js via missions.loadIndex().
-export function applySave(state, data) {
-  if (!data) return state;
-  state.money = data.money;
-  state.muted = !!data.muted;
-  state.stats = state.stats || {};
-  state.stats.missionsDone = data.missionsDone ?? 0;
-  state.stats.carsStolen = data.carsStolen ?? 0;
-  state.stats.busted = data.busted ?? 0;
-  state.stats.deaths = data.deaths ?? 0;
-  state.stats.bestCash = data.bestCash ?? 0;
-  return state;
+export function clearSave() {
+  const store = storage();
+  if (!store) return;
+  try { store.removeItem(SAVE_KEY); } catch (e) { /* ignore */ }
+  try { store.removeItem(BAK_KEY); } catch (e) { /* ignore */ }
 }

@@ -1,8 +1,8 @@
-// A tiny static server for game/ (Node 22, standard library only).
-// `node serve.ts` serves game/ on http://localhost:8080 so the entry can
-// be played and screenshotted in a desktop browser with no build step.
-// It answers reads only (GET and HEAD — anything else is a 405), sends
-// the MIME types a browser game needs, refuses every path that escapes
+// A tiny static server for game/ (Node 22, standard library only), so the
+// entry can be played locally without a build step:
+//   node serve.ts            serves game/ on http://localhost:8080
+//   node serve.ts --port 8901
+// It sends the MIME types a browser game needs, refuses any path outside
 // game/, and otherwise does nothing clever: a development convenience,
 // not a web server for the internet.
 import { createReadStream, statSync } from 'node:fs';
@@ -11,11 +11,10 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-
-const argv = process.argv.slice(2);
-const flagAt = argv.indexOf('--port');
-const wanted = flagAt === -1 ? 8080 : Number(argv[flagAt + 1]);
-const port = Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
+const args = process.argv.slice(2);
+const portIndex = args.indexOf('--port');
+const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
+const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -42,21 +41,15 @@ const MIME: Record<string, string> = {
 };
 
 createServer((request, response) => {
-  // Reads only: anything that is not GET or HEAD is refused outright.
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    response.writeHead(405, { allow: 'GET, HEAD' }).end('method not allowed');
-    return;
-  }
+  const url = new URL(request.url ?? '/', 'http://localhost');
   let pathname: string;
   try {
-    pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname);
+    pathname = decodeURIComponent(url.pathname);
   } catch {
     response.writeHead(400).end('bad request');
     return;
   }
   if (pathname.endsWith('/')) pathname += 'index.html';
-  // Resolve inside game/ and check the result stayed there: a path with
-  // ".." in it must never escape the root.
   const file = resolve(join(root, normalize(pathname)));
   if (file !== root && !file.startsWith(root + sep)) {
     response.writeHead(403).end('forbidden');
@@ -76,16 +69,7 @@ createServer((request, response) => {
     'content-length': size,
     'cache-control': 'no-store',
   });
-  // HEAD asks for the headers only: end here with no body.
-  if (request.method === 'HEAD') {
-    response.end();
-    return;
-  }
-  const stream = createReadStream(file);
-  stream.on('error', () => {
-    if (!response.writableEnded) response.end();
-  });
-  stream.pipe(response);
+  createReadStream(file).pipe(response);
 }).listen(port, '127.0.0.1', () => {
   console.log(`game/ is on http://localhost:${port}`);
 });

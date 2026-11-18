@@ -1,813 +1,676 @@
-// Solmar Bay — headless self-test (Node 22, no browser).
-// Run: node --import ./tests/register-three.mjs tests/selftest.mjs
-// (the --import maps the bare 'three' specifier to the vendored build).
-// Tests: RNG determinism, A* paths, mission data, world stepping (walk,
-// enter a car, drive), police (heat/spawn/bust/cooldown), missions (M1
-// flow, timer fail), combat (punch/shoot/medkit/gun shop/death), save
-// round-trip, audio/effects/hud/minimap headless, staged shots +
-// determinism, dossier caps, main.ts build + determinism, serve.ts,
-// and (when screenshots exist) the shots on disk.
-// Exits non-zero on any failure; prints PASS/SKIP per check.
-import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// Solmar Bay — pure-logic selftest (Node, no browser).
+// Imports the game's logic modules directly, with 'three' answered by the
+// in-memory stub from tests/three-hooks.mjs. Run:
+//   node --import ./tests/register-three.mjs tests/selftest.mjs
+import * as THREE from 'three';
+import { CONFIG } from '../game/src/config.js';
+import { mulberry32, range, int, choice, shuffle } from '../game/src/random.js';
+import { buildCity, collidesWithBuildings, clampToCity } from '../game/src/city.js';
+import { createCar, createCarMesh, updateCar, damageCar, CAR_COLORS } from '../game/src/vehicle.js';
+import { createPlayer, createPlayerMesh, updatePlayer } from '../game/src/player.js';
+import { createTraffic, createTrafficMeshes, updateTraffic, lightState } from '../game/src/traffic.js';
+import { createPolice, addHeat, updatePolice } from '../game/src/police.js';
+import { createMissions, updateMissions, missionObjective } from '../game/src/missions.js';
+import { createCombat, updateCombat, punch, shoot, reload, switchWeapon, buyAmmo, healPlayer } from '../game/src/combat.js';
+import { SAVE_KEY, loadSave, saveGame } from '../game/src/save.js';
+import { createEffects, updateEffects, spawnSmoke, spawnSparks, muzzleFlash, tireSmoke } from '../game/src/effects.js';
+import { getShotParams, stageShot, exposeGTA, markShotFrame } from '../game/src/shots.js';
+import { createScene, updateCamera } from '../game/src/render.js';
 
-import { CONFIG, LANDMARKS } from '../game/src/config.js';
-import { createRandom } from '../game/src/random.js';
-import { createWorld } from '../game/src/world.js';
-import { createInput } from '../game/src/input.js';
-import { createPolice } from '../game/src/police.js';
-import { createMissions } from '../game/src/missions.js';
-import { createCombat } from '../game/src/combat.js';
-import { createEffects } from '../game/src/effects.js';
-import { createAudio } from '../game/src/audio.js';
-import { createHud } from '../game/src/hud.js';
-import { createMinimap } from '../game/src/minimap.js';
-import { stageShot, mulberry32, SHOT_NAMES } from '../game/src/shots.js';
-import { loadSave, saveGame, applySave, hasSave, clearSave, captureSave } from '../game/src/save.js';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, '..');
-
-let passed = 0;
-let failed = 0;
-let skipped = 0;
-
-function check(name, cond, detail) {
-  if (cond) {
-    passed++;
-    console.log(`PASS ${name}`);
-  } else {
-    failed++;
-    console.log(`FAIL ${name}${detail ? ' — ' + detail : ''}`);
-  }
+let n = 0;
+const failures = [];
+function t(cond, msg) {
+  n++;
+  if (!cond) failures.push(msg);
 }
-function skip(name, reason) {
-  skipped++;
-  console.log(`SKIP ${name} (${reason})`);
-}
+function eq(a, b, msg) { t(Object.is(a, b), `${msg} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`); }
+function approx(a, b, eps, msg) { t(Math.abs(a - b) <= eps, `${msg} (got ${a}, want ${b} ± ${eps})`); }
 
-function makeSystems() {
-  return { police: createPolice(), missions: createMissions(), combat: createCombat() };
-}
-
-// Step the world as the browser does after Enter: the world starts on
-// the title screen, and missions only progress once the game is playing.
-// A world left on 'title' never starts M0, so every stepped test plays
-// first. Busted/wasted screens are left alone (the respawn flow owns
-// them, and forcing 'play' there would hide a stuck respawn).
-function stepN(world, input, systems, n) {
-  if (world.state.screen === 'title') world.state.screen = 'play';
-  for (let i = 0; i < n; i++) {
-    world.step(1 / 60, input, systems);
-    input.endFrame();
-  }
-}
-
+// --- fake localStorage for the save tests ---
 function fakeStorage() {
-  const mem = new Map();
+  const m = new Map();
   return {
-    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
-    setItem: (k, v) => { mem.set(k, v); },
-    removeItem: (k) => { mem.delete(k); },
+    getItem: (k) => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => { m.set(k, String(v)); },
+    removeItem: (k) => { m.delete(k); },
   };
 }
+globalThis.localStorage = fakeStorage();
+const sceneStub = { add() {}, remove() {} };
 
-function fakeDocument() {
-  const nodes = new Map();
-  function makeNode(id) {
-    const node = {
-      id,
-      textContent: '',
-      innerHTML: '',
-      style: {},
-      children: [],
-      classList: {
-        _set: new Set(),
-        toggle: (c, force) => {
-          if (force === undefined) {
-            if (node.classList._set.has(c)) node.classList._set.delete(c);
-            else node.classList._set.add(c);
-          } else if (force) node.classList._set.add(c);
-          else node.classList._set.delete(c);
-        },
-        add: (c) => node.classList._set.add(c),
-        remove: (c) => node.classList._set.delete(c),
-        contains: (c) => node.classList._set.has(c),
-      },
-      appendChild: (child) => { node.children.push(child); child.parentNode = node; return child; },
-      removeChild: (child) => {
-        const i = node.children.indexOf(child);
-        if (i >= 0) node.children.splice(i, 1);
-        child.parentNode = null;
-        return child;
-      },
-      parentNode: null,
-    };
-    Object.defineProperty(node, 'firstChild', { get: () => node.children[0] || null });
-    return node;
-  }
+// ================= config =================
+eq(CONFIG.WORLD_SIZE, 400, 'config: world 400 m');
+eq(CONFIG.BLOCKS, 8, 'config: 8 blocks');
+eq(CONFIG.STREET_W, 12, 'config: streets 12 m');
+eq(CONFIG.PLAYER.walk, 5, 'config: walk 5 m/s');
+eq(CONFIG.PLAYER.run, 8, 'config: run 8 m/s');
+eq(CONFIG.PLAYER.hp, 100, 'config: player hp 100');
+eq(CONFIG.CAR.accel, 12, 'config: car accel 12');
+eq(CONFIG.CAR.top, 38, 'config: car top 38 m/s');
+eq(CONFIG.CAR.sportsTop, 46, 'config: sports top 46 m/s');
+eq(CONFIG.CAR.brake, 20, 'config: brake 20');
+eq(CONFIG.CAR.reverse, 10, 'config: reverse 10');
+eq(CONFIG.TRAFFIC_COUNT, 10, 'config: 10 traffic cars');
+eq(CONFIG.PARKED_COUNT, 8, 'config: 8 parked cars');
+eq(CONFIG.PED_COUNT, 24, 'config: 24 peds');
+eq(CONFIG.POLICE.maxStars, 5, 'config: max 5 stars');
+eq(CONFIG.POLICE.decayDelay, 15, 'config: decay delay 15 s');
+eq(CONFIG.POLICE.decayPer, 10, 'config: decay step 10 s');
+eq(CONFIG.REWARDS.M1, 300, 'config: M1 reward $300');
+eq(CONFIG.REWARDS.M2, 500, 'config: M2 reward $500');
+eq(CONFIG.REWARDS.M3, 800, 'config: M3 reward $800');
+eq(CONFIG.SAVE_KEY, 'solmar-bay-save-v1', 'config: save key');
+eq(SAVE_KEY, 'solmar-bay-save-v1', 'save: exported SAVE_KEY matches config');
+
+// ================= random =================
+{
+  const a = mulberry32(7);
+  const b = mulberry32(7);
+  const c = mulberry32(8);
+  t(a() === b(), 'rng: same seed, same first value');
+  t(a() === b(), 'rng: same seed, same second value');
+  t(a() !== c(), 'rng: different seed, different first value');
+  const r = mulberry32(42);
+  for (let i = 0; i < 50; i++) { const v = r(); t(v >= 0 && v < 1, 'rng: value in [0,1)'); }
+  const rr = mulberry32(1);
+  for (let i = 0; i < 20; i++) { const v = range(rr, 5, 9); t(v >= 5 && v < 9, 'rng: range in bounds'); }
+  const ri = mulberry32(2);
+  for (let i = 0; i < 20; i++) { const v = int(ri, 3, 7); t(Number.isInteger(v) && v >= 3 && v < 7, 'rng: int in bounds'); }
+  eq(choice(mulberry32(3), ['a']), 'a', 'rng: choice of one');
+  const s1 = shuffle(mulberry32(9), [1, 2, 3, 4, 5, 6, 7, 8]);
+  const s2 = shuffle(mulberry32(9), [1, 2, 3, 4, 5, 6, 7, 8]);
+  eq(JSON.stringify(s1), JSON.stringify(s2), 'rng: shuffle deterministic');
+  eq(JSON.stringify([...s1].sort((x, y) => x - y)), JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8]), 'rng: shuffle is a permutation');
+}
+
+// ================= city =================
+const city = buildCity(7);
+const cityAgain = buildCity(7);
+const cityOther = buildCity(8);
+eq(JSON.stringify(city), JSON.stringify(cityAgain), 'city: same seed, identical city');
+t(JSON.stringify(city) !== JSON.stringify(cityOther), 'city: different seed, different city');
+t(city.buildings.length > 40, `city: has buildings (${city.buildings.length})`);
+eq(city.districts.length, 5, 'city: 5 districts');
+eq(city.streets.length, 18, 'city: 18 street segments');
+t(city.palms.length > 20, `city: palms present (${city.palms.length})`);
+eq(city.containers.length, 12, 'city: 12 containers');
+eq(city.cranes.length, 3, 'city: 3 cranes');
+eq(city.stalls.length, 10, 'city: 10 market stalls');
+eq(city.billboards.length, 5, 'city: 5 billboards');
+eq(city.cafe.x, -20, 'city: cafe x -20');
+eq(city.cafe.z, -10, 'city: cafe z -10');
+eq(city.docks.x, 160, 'city: docks x 160');
+eq(city.docks.z, 50, 'city: docks z 50');
+eq(city.garage.x, 0, 'city: garage x 0');
+eq(city.garage.z, 170, 'city: garage z 170');
+eq(city.safehouse.x, -60, 'city: safehouse x -60');
+eq(city.safehouse.z, 160, 'city: safehouse z 160');
+eq(city.precinct.x, 100, 'city: precinct x 100');
+eq(city.precinct.z, -80, 'city: precinct z -80');
+eq(city.hospital.x, 120, 'city: hospital x 120');
+eq(city.hospital.z, -120, 'city: hospital z -120 (south is +z, hospital is north)');
+eq(city.gunshop.x, 80, 'city: gunshop x 80');
+eq(city.gunshop.z, 40, 'city: gunshop z 40');
+eq(city.spawn.x, 0, 'city: spawn x 0');
+eq(city.spawn.z, 20, 'city: spawn z 20');
+{
+  const b0 = city.buildings[0];
+  t(collidesWithBuildings(city, b0.x, b0.z, 1), 'city: building centre collides');
+  t(!collidesWithBuildings(city, 0, 0, 1), 'city: plaza centre is clear');
+  const c = clampToCity(city, 500, -500);
+  eq(c.x, 198, 'city: clamp x to +198');
+  eq(c.z, -198, 'city: clamp z to -198');
+}
+
+// ================= vehicle =================
+{
+  const car = createCar({ x: 10, z: 20, heading: 0.5, kind: 'sedan', color: '#c94a3a' });
+  eq(car.hp, 100, 'car: hp 100');
+  eq(car.speed, 0, 'car: starts stopped');
+  eq(car.x, 10, 'car: x from options');
+  eq(car.kind, 'sedan', 'car: kind from options');
+  const def = createCar({});
+  eq(def.kind, 'sedan', 'car: default kind sedan');
+  t(CAR_COLORS.length >= 8, 'car: palette has colours');
+  updateCar(car, { throttle: 1, steer: 0, handbrake: false }, 0.1, city);
+  t(car.speed > 1 && car.speed < 2, `car: accelerates (${car.speed.toFixed(2)})`);
+  t(car.z > 20, 'car: moves forward along heading');
+  for (let i = 0; i < 50; i++) updateCar(car, { throttle: 1, steer: 0, handbrake: false }, 0.1, null);
+  eq(car.speed, 38, 'car: top speed capped at 38');
+  const sport = createCar({ kind: 'sports' });
+  for (let i = 0; i < 60; i++) updateCar(sport, { throttle: 1, steer: 0, handbrake: false }, 0.1, null);
+  eq(sport.speed, 46, 'car: sports top speed 46');
+  const braker = createCar({});
+  braker.speed = 20;
+  updateCar(braker, { throttle: -1, steer: 0, handbrake: false }, 0.5, null);
+  t(braker.speed < 20 && braker.speed > 0, `car: braking slows (${braker.speed.toFixed(1)})`);
+  const reverser = createCar({});
+  for (let i = 0; i < 20; i++) updateCar(reverser, { throttle: -1, steer: 0, handbrake: false }, 0.1, null);
+  t(reverser.speed < 0 && reverser.speed >= -10, `car: reverses, capped at -10 (${reverser.speed.toFixed(1)})`);
+  const steerer = createCar({ heading: 0 });
+  steerer.speed = 10;
+  updateCar(steerer, { throttle: 0, steer: 1, handbrake: false }, 0.5, null);
+  t(steerer.heading > 0.05, `car: steering turns the car (${steerer.heading.toFixed(2)})`);
+  const dmg = createCar({});
+  damageCar(dmg, 70);
+  eq(dmg.hp, 30, 'car: damage reduces hp');
+  eq(dmg.smoke, true, 'car: smoke below 40 hp');
+  damageCar(dmg, 40);
+  eq(dmg.hp, 0, 'car: hp floors at 0');
+  eq(dmg.stalled, true, 'car: stalls at 0 hp');
+  eq(dmg.speed, 0, 'car: stalled car stops');
+  const meshCar = createCar({ kind: 'police', x: 5, z: 5 });
+  const mesh = createCarMesh(meshCar, THREE);
+  t(mesh !== null && mesh !== undefined, 'car: mesh builds with stub THREE');
+  t(mesh.children.length >= 8, `car: mesh has parts (${mesh.children.length})`);
+  t(meshCar.mesh === mesh, 'car: mesh stored on car');
+  const lightbar = mesh.children.find((c) => c.name === 'lightbar');
+  t(!!lightbar, 'car: police mesh has a light bar');
+}
+
+// ================= player =================
+function playerState(over = {}) {
+  const S = {
+    player: createPlayer({ x: 0, z: 20, heading: 0 }),
+    input: { keys: {}, mouseDX: 0, mouseDY: 0, mouseDown: false },
+    city,
+    cars: [],
+    parkedCars: [],
+    camHeading: Math.PI,
+    save: { stats: { carsStolen: 0 } },
+    audio: {},
+    combat: createCombat(),
+    rng: mulberry32(7),
+    time: 0,
+    messages: [],
+  };
+  Object.assign(S, over);
+  return S;
+}
+{
+  const p = createPlayer({ x: 3, z: 4, heading: 1 });
+  eq(p.hp, 100, 'player: hp 100');
+  eq(p.money, 150, 'player: starts with $150');
+  eq(p.onFoot, true, 'player: starts on foot');
+  eq(p.x, 3, 'player: spawn x honoured');
+  const pm = createPlayerMesh(p, THREE);
+  t(pm && pm.children.length >= 5, 'player: mesh builds with body/head/arms');
+  const S = playerState();
+  updatePlayer._eHeld = false;
+  S.input.keys.KeyW = true;
+  updatePlayer(S, 1);
+  approx(S.player.z, 15, 0.01, 'player: walks 5 m/s forward (camHeading PI = -z)');
+  const S2 = playerState();
+  updatePlayer._eHeld = false;
+  S2.input.keys.KeyW = true;
+  S2.input.keys.ShiftLeft = true;
+  updatePlayer(S2, 1);
+  approx(S2.player.z, 12, 0.01, 'player: runs 8 m/s with Shift');
+  // Building collision: stand inside a building, try to walk out.
+  const b0 = city.buildings[0];
+  const S3 = playerState();
+  updatePlayer._eHeld = false;
+  S3.player.x = b0.x;
+  S3.player.z = b0.z;
+  S3.input.keys.KeyW = true;
+  updatePlayer(S3, 0.5);
+  eq(S3.player.x, b0.x, 'player: building blocks x movement');
+  eq(S3.player.z, b0.z, 'player: building blocks z movement');
+  // Enter + exit a car.
+  const S4 = playerState();
+  const parked = createCar({ x: 1, z: 20, heading: 0, kind: 'sedan' });
+  S4.cars = [parked];
+  updatePlayer._eHeld = false;
+  S4.input.keys.KeyE = true;
+  updatePlayer(S4, 0.016);
+  eq(S4.player.onFoot, false, 'player: E enters a nearby car');
+  eq(S4.player.car, parked, 'player: entered the parked car');
+  eq(S4.save.stats.carsStolen, 1, 'player: entering counts as a steal');
+  S4.input.keys.KeyE = false;
+  updatePlayer(S4, 0.016);
+  S4.input.keys.KeyW = true;
+  const zBefore = S4.player.z;
+  for (let i = 0; i < 10; i++) updatePlayer(S4, 0.1);
+  t(S4.player.car.speed > 5, `player: driving accelerates (${S4.player.car.speed.toFixed(1)} m/s)`);
+  t(Math.abs(S4.player.z - zBefore) > 2, 'player: driving moves the player');
+  updatePlayer._eHeld = false;
+  S4.input.keys.KeyW = false;
+  S4.input.keys.KeyE = true;
+  updatePlayer(S4, 0.016);
+  eq(S4.player.onFoot, true, 'player: E exits the car');
+  eq(S4.player.car, null, 'player: no car after exit');
+}
+
+// ================= traffic =================
+{
+  eq(lightState(0), 'green', 'traffic: lights green at t=0');
+  eq(lightState(9), 'green', 'traffic: lights green at t=9');
+  eq(lightState(10), 'red', 'traffic: lights red at t=10');
+  eq(lightState(25), 'green', 'traffic: lights green again at t=25');
+  const tr = createTraffic(city, mulberry32(7));
+  eq(tr.cars.length, 10, 'traffic: 10 cars');
+  eq(tr.peds.length, 24, 'traffic: 24 peds');
+  t(tr.cars.every((c) => c.route && c.route.length === 4), 'traffic: every car has a 4-point loop');
+  t(tr.cars.every((c) => c.cruise >= 7 && c.cruise <= 11), 'traffic: cruise speeds 7-11 m/s');
+  createTrafficMeshes(tr, THREE);
+  t(tr.cars.every((c) => !!c.mesh), 'traffic: car meshes built');
+  t(tr.peds.every((p) => !!p.mesh), 'traffic: ped meshes built');
+  const S = {
+    trafficCars: tr.cars, peds: tr.peds, traffic: tr, city, time: 0,
+    player: { x: 0, z: 0, car: null }, audio: {}, rng: mulberry32(7),
+  };
+  const x0 = tr.cars[0].x;
+  const z0 = tr.cars[0].z;
+  const px0 = tr.peds.map((p) => [p.x, p.z]);
+  updateTraffic(S, 1);
+  t(Math.hypot(tr.cars[0].x - x0, tr.cars[0].z - z0) > 0.5, 'traffic: cars move along their route');
+  const pedMoved = tr.peds.reduce((sum, p, i) => sum + Math.hypot(p.x - px0[i][0], p.z - px0[i][1]), 0);
+  t(pedMoved > 1, `traffic: peds wander (${pedMoved.toFixed(1)} m total)`);
+  t(tr.cars.every((c) => c.speed <= c.cruise + 0.01), 'traffic: cars never exceed cruise speed');
+}
+
+// ================= police =================
+function policeState(over = {}) {
   return {
-    getElementById: (id) => {
-      if (!nodes.has(id)) nodes.set(id, makeNode(id));
-      return nodes.get(id);
-    },
-    createElement: () => makeNode('el-' + Math.random()),
-    _nodes: nodes,
+    player: { x: 0, z: 0, heading: 0, speed: 0, car: null },
+    police: createPolice(),
+    scene: sceneStub,
+    THREE,
+    rng: mulberry32(7),
+    time: 0,
+    messages: [],
+    hud: null,
+    onBusted: null,
+    effects: null,
+    audio: null,
+    save: { stats: {} },
+    ...over,
   };
 }
-
-function fakeCanvas2d() {
-  const ctx = new Proxy({}, {
-    get: (t, prop) => {
-      if (prop in t) return t[prop];
-      return () => {};
-    },
-    set: (t, prop, v) => { t[prop] = v; return true; },
-  });
-  return { width: 160, height: 160, getContext: () => ctx };
+{
+  const S = policeState();
+  eq(S.police.stars, 0, 'police: starts at 0 stars');
+  eq(S.police.cops.length, 0, 'police: starts with no cops');
+  addHeat(S, 1);
+  eq(S.police.stars, 1, 'police: +1 heat = 1 star');
+  eq(S.police.heat, 1, 'police: heat tracks');
+  addHeat(S, 10);
+  eq(S.police.stars, 5, 'police: stars cap at 5');
+  eq(S.police.heat, 11, 'police: heat keeps counting past the star cap');
+  const S2 = policeState();
+  S2.police.stars = 2;
+  S2.police.heat = 2;
+  updatePolice(S2, 0.1);
+  eq(S2.police.cops.length, 2, 'police: 2 stars spawns 2 cops');
+  t(S2.police.cops.every((c) => c.car.kind === 'police'), 'police: spawned cops are police cars');
+  t(S2.police.cops.every((c) => !!c.mesh), 'police: spawned cops have meshes');
+  t(S2.police.cops.every((c) => c.mesh.children.length >= 8), 'police: cop mesh has body/cabin/stripe/wheels/light bar');
+  // Decay: 3 stars, cops far away, last seen long ago -> -1 star per 10 s.
+  const S3 = policeState();
+  S3.police.stars = 3;
+  S3.police.heat = 3;
+  S3.police.lastSeenT = -100;
+  for (let i = 0; i < 3; i++) {
+    const car = { x: 500, z: 500, heading: 0, speed: 0 };
+    S3.police.cops.push({ car, mesh: null, x: 500, z: 500, heading: 0, speed: 0, hp: 100, disabled: false, blocker: false, bustT: 0, flashT: 0 });
+  }
+  for (let i = 0; i < 11; i++) { S3.time += 1; updatePolice(S3, 1); }
+  eq(S3.police.stars, 2, 'police: stars decay after 15 s unseen + 10 s');
+  eq(S3.police.heat, 2, 'police: heat decays with stars');
+  // Busted: a cop already on top of the player for 2 s.
+  let busted = false;
+  const S4 = policeState({ onBusted: () => { busted = true; } });
+  S4.police.stars = 1;
+  const copCar = { x: 0, z: 0, heading: 0, speed: 0 };
+  S4.police.cops.push({ car: copCar, mesh: null, x: 0, z: 0, heading: 0, speed: 0, hp: 100, disabled: false, blocker: false, bustT: 1.9, flashT: 0 });
+  updatePolice(S4, 0.2);
+  t(busted, 'police: cop within 3 m for 2 s busts the player');
 }
 
-// ---------------------------------------------------------------------------
-console.log('== RNG determinism ==');
-{
-  const a = createRandom(7);
-  const b = createRandom(7);
-  let same = true;
-  for (let i = 0; i < 100; i++) if (a.next() !== b.next()) same = false;
-  check('createRandom(7) repeats', same);
-  const c = createRandom(8);
-  check('createRandom(8) differs', c.next() !== createRandom(7).next());
-  const m1 = mulberry32(7);
-  const m2 = mulberry32(7);
-  let msame = true;
-  for (let i = 0; i < 50; i++) if (m1() !== m2()) msame = false;
-  check('mulberry32(7) repeats', msame);
-}
-
-// ---------------------------------------------------------------------------
-console.log('== A* paths ==');
-{
-  const world = createWorld(7);
-  const nav = world.city.navGrid;
-  const p1 = nav.findPath(0, 24, 144, 48);
-  check('A* market->docks finds a path', Array.isArray(p1) && p1.length > 3, p1 ? p1.length + ' pts' : 'null');
-  if (p1) {
-    const last = p1[p1.length - 1];
-    check('A* path ends at the target', Math.abs(last[0] - 144) < 2 && Math.abs(last[1] - 48) < 2, JSON.stringify(last));
-  }
-  const p2 = nav.findPath(8, 30, 0, -36);
-  check('A* spawn->café finds a path', Array.isArray(p2) && p2.length > 1);
-  // The plaza fountain sits at (0, 12) — its basin collider is
-  // {minX:-4, maxX:4, minZ:8, maxZ:16} — so a path STARTING in the
-  // fountain is unreachable, while the (0, 0) street intersection just
-  // south of it is open ground and routes fine.
-  check('A* from a blocked cell (fountain, 0,12) returns null', nav.findPath(0, 12, 144, 48) === null);
-  check('A* from the open (0,0) intersection finds a path', Array.isArray(nav.findPath(0, 0, 144, 48)));
-  check('Fountain point itself is blocked', nav.pointBlocked(0, 12) === true && nav.pointBlocked(0, 0) === false);
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Mission data ==');
-{
-  check('M1 reward 300 / 150 s', CONFIG.MISSIONS[1].reward === 300 && CONFIG.MISSIONS[1].time === 150);
-  check('M2 reward 500', CONFIG.MISSIONS[2].reward === 500);
-  check('M3 reward 800 / 150 s', CONFIG.MISSIONS[3].reward === 800 && CONFIG.MISSIONS[3].time === 150);
-  check('Taxi fare 45, cash pickup 25', CONFIG.TAXI_FARE === 45 && CONFIG.CASH_PICKUP === 25);
-  check('Landmarks present', !!(LANDMARKS.cafe && LANDMARKS.docks && LANDMARKS.garage && LANDMARKS.safehouse && LANDMARKS.hospital && LANDMARKS.precinct && LANDMARKS.gunshop && LANDMARKS.beachCar));
-}
-
-// ---------------------------------------------------------------------------
-console.log('== World stepping: walk + enter a car ==');
-{
-  const world = createWorld(7);
-  const systems = makeSystems();
-  const input = createInput(null);
-  const startX = world.state.player.x;
-  const startZ = world.state.player.z;
-  input.keys.add('KeyW');
-  stepN(world, input, systems, 120);
-  const moved = Math.hypot(world.state.player.x - startX, world.state.player.z - startZ);
-  check('WASD walks the player (2 s)', moved > 8, moved.toFixed(1) + ' m');
-  check('Walk speed approaches 5 m/s', world.state.player.speed > 4, world.state.player.speed.toFixed(2));
-  // Enter a parked car: teleport next to one, press E.
-  const car = world.nearestCar(world.state.player.x, world.state.player.z, 200, { parkedOnly: true });
-  check('A parked car exists', !!car);
-  if (car) {
-    world.teleport(car.x + 2, car.z, Math.PI, null);
-    input.justPressed.add('KeyE');
-    world.step(1 / 60, input, systems);
-    input.endFrame();
-    check('E enters the car', world.state.player.inCar === true && world.state.player.carId === car.id,
-      `inCar=${world.state.player.inCar} carId=${world.state.player.carId}`);
-  }
-}
-
-// Driving on a clear street (fresh world): the nearest parked car may face
-// a building (city.js placement), so drive a sedan down the beachfront
-// street (x=-144, south) instead — that is the cover-shot staging too.
-{
-  const world = createWorld(7);
-  const systems = makeSystems();
-  const input = createInput(null);
-  world.state.systems = systems;
-  const sedan = world.state.cars.find((c) => c.kind === 'sedan' && !c.isPolice);
-  check('A sedan exists for the driving test', !!sedan);
-  if (sedan) {
-    world.teleport(-144, -60, 0, sedan);
-    check('Teleport puts the player in the sedan', world.state.player.inCar === true);
-    input.keys.add('KeyW');
-    const bx = sedan.x, bz = sedan.z;
-    stepN(world, input, systems, 180);
-    const driven = Math.hypot(sedan.x - bx, sedan.z - bz);
-    check('Driving moves the car (3 s)', driven > 20, driven.toFixed(1) + ' m, speed ' + Math.abs(sedan.speed).toFixed(1));
-    check('distanceDriven accumulates', world.state.stats.distanceDriven > 20, world.state.stats.distanceDriven.toFixed(1));
-    check('No NaN in car or player position', Number.isFinite(sedan.x) && Number.isFinite(sedan.z)
-      && Number.isFinite(world.state.player.x) && Number.isFinite(world.state.player.z));
-  }
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Police: heat, spawn, bust, cooldown ==');
-{
-  const world = createWorld(7);
-  const systems = makeSystems();
-  const input = createInput(null);
-  world.state.systems = systems;
-  systems.police.addHeat(3, 'test', world.state);
-  check('addHeat(3) -> wanted 3', world.state.wanted === 3, 'wanted=' + world.state.wanted);
-  stepN(world, input, systems, 180);
-  const policeCars = world.state.cars.filter((c) => c.isPolice);
-  check('Police cars spawn at 3 stars', policeCars.length >= 2, policeCars.length + ' cars');
-  check('state.policeNear is set', world.state.policeNear === true || world.state.policeNear === false);
-  // Bust: put a cop next to the player on foot, wait.
-  const p = world.state.player;
-  if (p.car) world.teleport(p.x, p.z, Math.PI, null);
-  systems.police.spawnCop(world.state, p.x, p.z);
-  const cop = world.state.peds.find((x) => x.isCop);
-  if (cop) {
-    cop.x = p.x + 1;
-    cop.z = p.z;
-    const moneyBefore = world.state.money;
-    stepN(world, input, systems, 180);
-    check('Bust triggers on foot (cop 1 m, 3 s)', world.state.screen === 'busted', 'screen=' + world.state.screen);
-    check('Bust fines $200', world.state.money === Math.max(0, moneyBefore - 200), `money ${moneyBefore} -> ${world.state.money}`);
-    check('Bust clears wanted', world.state.wanted === 0);
-    check('Bust respawns at the precinct', Math.hypot(p.x - LANDMARKS.precinct.x, p.z - LANDMARKS.precinct.z) < 2,
-      `(${p.x.toFixed(0)},${p.z.toFixed(0)}) vs precinct (${LANDMARKS.precinct.x},${LANDMARKS.precinct.z})`);
-  } else {
-    check('Bust triggers on foot (cop spawned)', false, 'no cop spawned');
-  }
-  // Cooldown: wanted 2, no police near, 15 s + 10 s per star. Suppress
-  // spawning (spawnT) and backdate lastSeenAt so the decay can run.
-  const world2 = createWorld(7);
-  const sys2 = makeSystems();
-  const input2 = createInput(null);
-  world2.state.systems = sys2;
-  sys2.police.addHeat(2, 'test', world2.state);
-  sys2.police.spawnT = 1e9; // no new units during the test
-  sys2.police.lastSeenAt = world2.state.time - 20; // unseen for 20 s
-  stepN(world2, input2, sys2, 60 * 12);
-  check('Cooldown drops wanted after ~30 s unseen', world2.state.wanted < 2, 'wanted=' + world2.state.wanted);
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Missions: M1 flow, timer fail ==');
-{
-  const world = createWorld(7);
-  const systems = makeSystems();
-  const input = createInput(null);
-  world.state.systems = systems;
-  const m = systems.missions;
-  // Walk into the café to start M1 (M0 completes there, then M1 starts).
-  world.teleport(LANDMARKS.cafe.x, LANDMARKS.cafe.z, Math.PI, null);
-  stepN(world, input, systems, 5);
-  check('Café starts M1', m.index === 1 && m.phase === 'active', `index=${m.index} phase=${m.phase}`);
-  check('M1 objective is the docks step', (world.state.mission.objective || '').length > 0, world.state.mission.objective);
-  check('M1 marker is the docks', !!world.state.mission.marker && Math.hypot(world.state.mission.marker.x - LANDMARKS.docks.x, world.state.mission.marker.z - LANDMARKS.docks.z) < 2);
-  // Arrive at the docks (5 m out: inside the 8 m arrival radius, outside
-  // the 3 m collect radius) -> advance to step 1 (collect).
-  world.teleport(LANDMARKS.docks.x + 5, LANDMARKS.docks.z, 0, null);
-  stepN(world, input, systems, 5);
-  check('Docks arrival advances M1 to step 1', m.stepIndex === 1, 'stepIndex=' + m.stepIndex);
-  // Walk onto the package itself -> step 2 (deliver to the café).
-  world.teleport(LANDMARKS.docks.x, LANDMARKS.docks.z, 0, null);
-  stepN(world, input, systems, 5);
-  check('Collecting the package advances M1 to step 2', m.stepIndex === 2, 'stepIndex=' + m.stepIndex);
-  // Deliver to the café -> complete, +$300. Step one at a time and stop
-  // the moment it completes: the very next step at the café would
-  // auto-start M2 (idle branch, within 8 m of the café).
-  // Count the DELTA: completing M0 at the café already raised
-  // missionsDone to 1 (the intro counts as a mission done), so the loop
-  // must wait for one MORE, not for the counter to reach 1.
-  const moneyBefore = world.state.money;
-  const doneBefore = world.state.stats.missionsDone;
-  world.teleport(LANDMARKS.cafe.x, LANDMARKS.cafe.z, Math.PI, null);
-  for (let i = 0; i < 10 && world.state.stats.missionsDone === doneBefore; i++) {
-    world.step(1 / 60, input, systems);
-    input.endFrame();
-  }
-  check('M1 completes at the café', world.state.stats.missionsDone === doneBefore + 1, 'done=' + world.state.stats.missionsDone);
-  check('M1 pays $300', world.state.money === moneyBefore + 300, `money ${moneyBefore} -> ${world.state.money}`);
-  // Move away from the café (to the plaza) BEFORE the next step, so the
-  // pending mission does not auto-start; then confirm it is pending.
-  world.teleport(LANDMARKS.plaza.x, LANDMARKS.plaza.z, 0, null);
-  stepN(world, input, systems, 2);
-  check('Next mission pending (index 2, idle)', m.index === 2 && m.phase === 'idle', `index=${m.index} phase=${m.phase}`);
-  // Timer fail: start M1 again, shrink the timer. The player is at the
-  // plaza, so the fail sticks (no café auto-restart).
-  m.start(1, world.state);
-  m.timer = 0.5;
-  stepN(world, input, systems, 60);
-  check('Timer expiry fails the mission', m.phase === 'idle' && m.index === 1, `phase=${m.phase} index=${m.index}`);
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Combat: punch, shoot, medkit, gun shop, death ==');
-{
-  const world = createWorld(7);
-  const systems = makeSystems();
-  const input = createInput(null);
-  world.state.systems = systems;
-  const combat = systems.combat;
-  const p = world.state.player;
-  // Punch: put a ped in front of the player, press F.
-  const ped = world.state.peds[0];
-  ped.x = p.x + Math.sin(p.yaw) * 1.5;
-  ped.z = p.z + Math.cos(p.yaw) * 1.5;
-  ped.hp = 100;
-  const hpBefore = ped.hp;
-  input.justPressed.add('KeyF');
-  world.step(1 / 60, input, systems);
-  input.endFrame();
-  check('Punch damages the ped in front', ped.hp < hpBefore, `hp ${hpBefore} -> ${ped.hp}`);
-  // Shoot: give the pistol + ammo, put a cop in front, click. Every other
-  // ped is parked far away first: the punched ped is still standing ~4 m
-  // ahead inside the pistol cone, and the shot hits the NEAREST target —
-  // without the clear-out it, not the cop, takes the round.
-  // Raise the heat to 3 stars first: at wanted 0 the police trim step
-  // removes every on-foot cop as excess (tier 0 wants 0), so a ped
-  // flagged isCop would be gone from state.peds before combat.step runs.
-  // At 3 stars the tier wants 2 foot cops, and the target survives.
-  systems.police.addHeat(3, 'test', world.state);
-  combat.weapon = 'pistol';
-  combat.ammo = 12;
-  combat.reserveAmmo = 12;
-  for (const pd of world.state.peds) { pd.x = 150; pd.z = 150; }
-  const cop = world.state.peds.find((x) => !x.isCop) || world.state.peds[0];
-  cop.isCop = true;
-  cop.hp = 100;
-  cop.x = p.x + Math.sin(p.yaw) * 10;
-  cop.z = p.z + Math.cos(p.yaw) * 10;
-  const copHpBefore = cop.hp;
-  input.justPressed.add('Mouse0');
-  world.step(1 / 60, input, systems);
-  input.endFrame();
-  check('Pistol shot damages the cop', cop.hp < copHpBefore, `hp ${copHpBefore} -> ${cop.hp}`);
-  check('Shot spends one round', combat.ammo === 11, 'ammo=' + combat.ammo);
-  // Medkit: low HP at the hospital.
-  p.hp = 40;
-  world.state.health = 40;
-  world.teleport(LANDMARKS.hospital.x, LANDMARKS.hospital.z, 0, null);
-  stepN(world, input, systems, 5);
-  check('Medkit heals at the hospital', p.hp > 40, 'hp=' + p.hp);
-  // Gun shop: no reserve ammo, enough money, at the shop.
-  combat.reserveAmmo = 0;
-  world.state.money = 150;
-  world.teleport(LANDMARKS.gunshop.x, LANDMARKS.gunshop.z, 0, null);
-  stepN(world, input, systems, 5);
-  check('Gun shop sells 12 rounds for $50', combat.reserveAmmo === 12 && world.state.money === 100,
-    `reserve=${combat.reserveAmmo} money=${world.state.money}`);
-  // Death: 1 HP, take 10 damage -> wasted, respawn at the hospital.
-  p.hp = 1;
-  world.state.health = 1;
-  world.damagePlayer(10);
-  stepN(world, input, systems, 5);
-  check('Death sets screen wasted', world.state.screen === 'wasted', 'screen=' + world.state.screen);
-  check('Death respawns at the hospital with full HP', p.hp === 100 && Math.hypot(p.x - LANDMARKS.hospital.x, p.z - LANDMARKS.hospital.z) < 2,
-    `hp=${p.hp} at (${p.x.toFixed(0)},${p.z.toFixed(0)})`);
-  check('Death fines $100', world.state.money === 0, 'money=' + world.state.money);
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Save round-trip ==');
-{
-  const store = fakeStorage();
-  const world = createWorld(7);
-  world.state.money = 777;
-  world.state.stats.missionsDone = 2;
-  const res = saveGame(world.state, store);
-  check('saveGame writes', res === true);
-  check('hasSave is true', hasSave(store) === true);
-  const loaded = loadSave(store);
-  check('loadSave reads', loaded.ok === true && loaded.data.money === 777 && loaded.data.missionIndex === 0);
-  const world2 = createWorld(7);
-  applySave(world2.state, loaded.data);
-  check('applySave restores money + missionsDone', world2.state.money === 777 && world2.state.stats.missionsDone === 2);
-  const bad = loadSave(fakeStorage());
-  check('Empty storage loads as empty', bad.ok === false && bad.empty === true);
-  clearSave(store);
-  check('clearSave removes the save', hasSave(store) === false);
-  // Corrupt JSON falls back to .bak.
-  const store2 = fakeStorage();
-  saveGame(world.state, store2);
-  store2.setItem('solmar-bay-save-v1', '{not json');
-  const loaded2 = loadSave(store2);
-  check('Corrupt save falls back (no crash)', loaded2.ok === false || loaded2.data.money === 777);
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Audio / effects / HUD / minimap (headless) ==');
-{
-  const audio = createAudio();
-  let audioOk = true;
-  try {
-    audio.sfx('gunshot');
-    audio.update(0.016, { player: { car: null, speed: 0 }, policeNear: false }, true, { keys: new Set() });
-    audio.setMuted(true);
-    audio.setMuted(false);
-    audio.stopAll();
-  } catch (e) { audioOk = false; console.log('  audio error:', e.message); }
-  check('Audio is a safe no-op without AudioContext', audioOk);
-
-  const effects = createEffects(null, null);
-  let fxOk = true;
-  try {
-    effects.burst('sparks', 0, 1, 0);
-    effects.burst('pickup', 1, 1, 1);
-    effects.addTrauma(0.5);
-    effects.feedback('hit', 0, 1, 0);
-    effects.update(0.5);
-    const off = effects.applyCamera({ position: { x: 0, y: 0, z: 0 }, rotation: { z: 0 } }, 0.016);
-    if (typeof off.x !== 'number') fxOk = false;
-  } catch (e) { fxOk = false; console.log('  effects error:', e.message); }
-  check('Effects burst/update/trauma/applyCamera run headless', fxOk && effects.trauma < 0.5, 'trauma=' + effects.trauma.toFixed(2));
-
-  const doc = fakeDocument();
-  const hud = createHud(doc);
-  const world = createWorld(7);
-  world.state.money = 1234;
-  world.state.wanted = 2;
-  world.state.player.hp = 55;
-  world.state.mission.objective = 'Test objective';
-  world.state.mission.marker = { x: 10, z: 10 };
-  world.state.mission.timer = 90;
-  world.state.events.push({ type: 'cash', text: 'Cash pickup +$25', t: 0 });
-  let hudOk = true;
-  try {
-    hud.update(world.state, 'play', 0.016);
-    hud.showMessage('hello', 'good');
-  } catch (e) { hudOk = false; console.log('  hud error:', e.message); }
-  check('HUD updates headless', hudOk);
-  check('HUD writes cash', doc._nodes.get('cash').textContent === '$1,234', doc._nodes.get('cash').textContent);
-  check('HUD writes stars', doc._nodes.get('stars').textContent === '★★☆☆☆', doc._nodes.get('stars').textContent);
-  check('HUD writes health', doc._nodes.get('health-num').textContent === '55', doc._nodes.get('health-num').textContent);
-
-  const minimap = createMinimap(fakeCanvas2d());
-  let mmOk = true;
-  try {
-    minimap.draw(world.state);
-  } catch (e) { mmOk = false; console.log('  minimap error:', e.message); }
-  check('Minimap draws headless', mmOk);
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Staged shots + determinism ==');
-{
-  for (const name of SHOT_NAMES) {
-    const world = createWorld(7);
-    const systems = makeSystems();
-    world.state.systems = systems;
-    const info = stageShot(name, world, systems);
-    check(`stageShot(${name}) ok`, info.ok === true && (info.screen === 'play' || info.screen === 'title'), JSON.stringify(info));
-  }
-  // Aliases: 'hero' stages the cover drive, 'title' the title screen.
-  {
-    const world = createWorld(7);
-    const systems = makeSystems();
-    world.state.systems = systems;
-    const hero = stageShot('hero', world, systems);
-    check("stageShot('hero') aliases the cover", hero.ok === true && hero.screen === 'play' && hero.inCar === true, JSON.stringify(hero));
-  }
-  {
-    const world = createWorld(7);
-    const systems = makeSystems();
-    world.state.systems = systems;
-    const title = stageShot('title', world, systems);
-    check("stageShot('title') stages the title screen", title.ok === true && title.screen === 'title', JSON.stringify(title));
-  }
-  // Determinism: same seed -> same staged state (all shots + aliases).
-  function stageOnce(name) {
-    const world = createWorld(7);
-    const systems = makeSystems();
-    world.state.systems = systems;
-    const info = stageShot(name, world, systems);
-    return { wanted: info.wanted, money: info.money, police: info.policeCars, peds: info.peds, inCar: info.inCar, speed: info.speed };
-  }
-  for (const name of [...SHOT_NAMES, 'hero', 'title']) {
-    const a = stageOnce(name);
-    const b = stageOnce(name);
-    check(`stageShot(${name}) is deterministic`, JSON.stringify(a) === JSON.stringify(b), JSON.stringify(a) + ' vs ' + JSON.stringify(b));
-  }
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Finisher polish (v2) ==');
-{
-  // Parked cars sit on a street centreline and face along it, so stealing
-  // one and driving straight never stalls against a wall.
-  const world = createWorld(7);
-  const parked = world.state.cars.filter((c) => c.isParked);
-  check('8 parked cars', parked.length === 8, parked.length + ' parked');
-  let parkedOk = true;
-  for (const car of parked) {
-    const onNs = CONFIG.CITY.STREETS.includes(car.x);
-    const onEw = CONFIG.CITY.STREETS.includes(car.z);
-    const alongNs = Math.abs(Math.sin(car.angle)) < 0.01; // faces north/south
-    const alongEw = Math.abs(Math.cos(car.angle)) < 0.01; // faces east/west
-    // On a north-south street (x is a street line) the car must face
-    // north/south; on an east-west street (z is a street line) east/west.
-    // The beach car (x=-176) sits on open sand, facing south along it.
-    const ok = car.x === -176
-      ? (Math.abs(car.angle) < 0.01)
-      : (onNs && alongNs) || (onEw && alongEw);
-    if (!ok) { parkedOk = false; console.log(`  parked ${car.kind} at (${car.x},${car.z}) angle ${car.angle.toFixed(2)} is off-street / crosswise`); }
-  }
-  check('Parked cars face along their street', parkedOk);
-  // Driving straight out of every parked spot for 3 s covers ground
-  // (no wall within ~9 m ahead).
-  let driveOk = true;
-  for (const spot of world.city.spawnPoints.parked) {
-    const w2 = createWorld(7);
-    const sys2 = makeSystems();
-    const inp2 = createInput(null);
-    w2.state.systems = sys2;
-    const car = w2.state.cars.find((c) => c.isParked && c.x === spot.x && c.z === spot.z);
-    if (!car) { driveOk = false; console.log(`  no parked car at (${spot.x},${spot.z})`); continue; }
-    w2.teleport(car.x, car.z, car.angle, car);
-    inp2.keys.add('KeyW');
-    const bx = car.x, bz = car.z;
-    stepN(w2, inp2, sys2, 180);
-    const d = Math.hypot(car.x - bx, car.z - bz);
-    if (d < 20) { driveOk = false; console.log(`  parked ${car.kind} at (${spot.x},${spot.z}) only drove ${d.toFixed(1)} m in 3 s`); }
-  }
-  check('Every parked car drives clear for 3 s', driveOk);
-
-  // Bright golden hour palette.
-  check('Sun is bright (intensity >= 3)', CONFIG.PALETTE.SUN_INTENSITY >= 3, String(CONFIG.PALETTE.SUN_INTENSITY));
-  check('Hemisphere light is bright (>= 1)', CONFIG.PALETTE.HEMI_INTENSITY >= 1, String(CONFIG.PALETTE.HEMI_INTENSITY));
-  check('Fog is far (near >= 200)', CONFIG.RENDER.FOG_NEAR >= 200, String(CONFIG.RENDER.FOG_NEAR));
-
-  // Bust while driving: on foot at the precinct, and stepping the world
-  // must NOT snap the player back into the car.
-  {
-    const w3 = createWorld(7);
-    const sys3 = makeSystems();
-    const inp3 = createInput(null);
-    w3.state.systems = sys3;
-    const sedan = w3.state.cars.find((c) => c.kind === 'sedan');
-    w3.teleport(-144, -60, 0, sedan);
-    sys3.police.addHeat(2, 'test', w3.state);
-    sys3.police.bust(w3.state);
-    const p3 = w3.state.player;
-    check('Bust in a car puts the player on foot', p3.onFoot === true && p3.car === null && p3.inCar === false,
-      `onFoot=${p3.onFoot} car=${p3.car ? 'set' : 'null'} inCar=${p3.inCar}`);
-    stepN(w3, inp3, sys3, 60);
-    check('Bust in a car stays at the precinct after stepping',
-      Math.hypot(p3.x - LANDMARKS.precinct.x, p3.z - LANDMARKS.precinct.z) < 2,
-      `(${p3.x.toFixed(0)},${p3.z.toFixed(0)}) vs precinct (${LANDMARKS.precinct.x},${LANDMARKS.precinct.z})`);
-  }
-
-  // Death while driving: on foot at the hospital, no snap-back.
-  {
-    const w4 = createWorld(7);
-    const sys4 = makeSystems();
-    const inp4 = createInput(null);
-    w4.state.systems = sys4;
-    const sedan = w4.state.cars.find((c) => c.kind === 'sedan');
-    w4.teleport(-144, -60, 0, sedan);
-    w4.state.player.hp = 1;
-    w4.damagePlayer(10);
-    stepN(w4, inp4, sys4, 5);
-    const p4 = w4.state.player;
-    check('Death in a car respawns on foot at the hospital',
-      p4.onFoot === true && p4.car === null && p4.hp === 100
-      && Math.hypot(p4.x - LANDMARKS.hospital.x, p4.z - LANDMARKS.hospital.z) < 2,
-      `onFoot=${p4.onFoot} hp=${p4.hp} at (${p4.x.toFixed(0)},${p4.z.toFixed(0)})`);
-  }
-
-  // Cash pickups never spawn inside a building collider.
-  {
-    const w5 = createWorld(7);
-    const sys5 = makeSystems();
-    let pickupsOk = true;
-    for (let i = 0; i < 50; i += 1) {
-      const pk = sys5.missions.newPickup(w5.state);
-      if (w5.city && w5.city.colliders) {
-        const inside = w5.city.colliders.some((c) => pk.x > c.minX && pk.x < c.maxX && pk.z > c.minZ && pk.z < c.maxZ);
-        if (inside) { pickupsOk = false; console.log(`  pickup at (${pk.x.toFixed(0)},${pk.z.toFixed(0)}) inside a building`); break; }
-      }
-    }
-    check('Cash pickups spawn outside buildings (50 samples)', pickupsOk);
-  }
-
-  // Save: a newer primary must not block the .bak fallback.
-  {
-    const store = fakeStorage();
-    const w6 = createWorld(7);
-    w6.state.money = 555;
-    saveGame(w6.state, store);
-    w6.state.money = 777;
-    saveGame(w6.state, store); // the 555 save is now the .bak
-    store.setItem('solmar-bay-save-v1', JSON.stringify({ version: 99, money: 1 }));
-    const loaded = loadSave(store);
-    check('Newer primary falls back to .bak', loaded.ok === true && loaded.data.money === 555 && loaded.fromBak === true,
-      loaded.ok ? `money=${loaded.data.money} fromBak=${loaded.fromBak}` : 'no fallback');
-  }
-
-  // Cover staging: the sedan drives south down the beach boulevard at
-  // speed, sea on the right, peds in the background.
-  {
-    const w7 = createWorld(7);
-    const sys7 = makeSystems();
-    w7.state.systems = sys7;
-    const info = stageShot('cover', w7, sys7);
-    const car = w7.state.player.car;
-    check('Cover car drives on the beach (x < -168)', !!car && car.x < -168, car ? `x=${car.x.toFixed(0)}` : 'no car');
-    check('Cover car is at speed (> 60 km/h)', info.speed > 60, info.speed + ' km/h');
-    const bgPeds = (w7.state.peds || []).filter((p) => car && Math.hypot(p.x - car.x, p.z - car.z) < 100).length;
-    check('Cover has a few background pedestrians', bgPeds >= 3, bgPeds + ' peds within 100 m');
-  }
-
-  // Chase staging: 3 stars, 3 cruisers ahead, at speed and undamaged —
-  // the cruisers must be closing in, not ramming the player head-on.
-  {
-    const w8 = createWorld(7);
-    const sys8 = makeSystems();
-    w8.state.systems = sys8;
-    const info = stageShot('chase', w8, sys8);
-    const car = w8.state.player.car;
-    check('Chase runs at 3 stars', info.wanted === 3, 'wanted=' + info.wanted);
-    check('Chase has 3 police cars', info.policeCars === 3, info.policeCars + ' police cars');
-    check('Chase is at speed (>= 60 km/h)', info.speed >= 60, info.speed + ' km/h');
-    check('Chase car is undamaged (no head-on ram)', !!car && car.hp === 100, car ? 'hp=' + car.hp : 'no car');
-  }
-
-  // On-foot staging: Dario on foot in the plaza, not in a car.
-  {
-    const w9 = createWorld(7);
-    const sys9 = makeSystems();
-    w9.state.systems = sys9;
-    const info = stageShot('onfoot', w9, sys9);
-    check('Onfoot staging is on foot', info.inCar === false && info.screen === 'play', JSON.stringify(info));
-  }
-
-  // Mission staging: M1 at the docks, Rosa's objective on the HUD.
-  {
-    const w10 = createWorld(7);
-    const sys10 = makeSystems();
-    w10.state.systems = sys10;
-    const info = stageShot('mission', w10, sys10);
-    check('Mission staging runs M1 at the docks', info.mission === 1 && (info.objective || '').toLowerCase().includes('docks'),
-      `mission=${info.mission} objective=${info.objective}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-console.log('== Dossier caps (game/ + screenshots/) ==');
-{
-  const gameDir = join(ROOT, 'game');
-  let files = 0;
-  let bytes = 0;
-  const walk = (dir) => {
-    for (const f of readdirSync(dir)) {
-      const p = join(dir, f);
-      const st = statSync(p);
-      if (st.isDirectory()) walk(p);
-      else { files++; bytes += st.size; }
-    }
+// ================= missions =================
+function missionState() {
+  const parkedSpots = [
+    { x: 25, z: -12 }, { x: -25, z: 12 }, { x: 75, z: -12 }, { x: -75, z: 12 },
+    { x: 12, z: -75 }, { x: -12, z: 75 }, { x: -170, z: -10 }, { x: 125, z: 12 },
+  ];
+  const parkedCars = parkedSpots.map((s) => createCar({ x: s.x, z: s.z, heading: 0, kind: 'sedan' }));
+  const S = {
+    player: { x: 0, z: 20, heading: 0, hp: 100, money: 150, car: null, onFoot: true, speed: 0 },
+    police: createPolice(),
+    missions: null,
+    save: { stats: { missionsDone: 0, carsStolen: 0, busted: 0, bestCash: 0 } },
+    rng: mulberry32(7),
+    time: 0,
+    messages: [],
+    audio: null,
+    effects: null,
+    parkedCars,
+    cars: parkedCars,
+    saveGame: null,
+    objective: '',
   };
-  walk(gameDir);
-  check('game/ file count <= 993', files <= 993, files + ' files');
-  check('game/ bytes <= 48 MiB', bytes <= 50331648, (bytes / 1048576).toFixed(2) + ' MiB');
-  const shotsDir = join(ROOT, 'screenshots');
-  // 4 staged shots (hero + title + onfoot + mission) — the kit gate
-  // allows 3-4 screenshots.
-  const shots = existsSync(shotsDir)
-    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f)) : [];
-  check('3-4 screenshots present', shots.length >= 3 && shots.length <= 4, shots.length + ' found: ' + shots.join(', '));
-  let shotsOk = shots.length >= 3 && shots.length <= 4;
-  for (const f of shots) {
-    const sz = statSync(join(shotsDir, f)).size;
-    if (sz > 262144) { shotsOk = false; console.log(`  ${f} is ${sz} bytes (> 256 KiB)`); }
-  }
-  if (shots.length >= 3) check('Each screenshot <= 256 KiB', shotsOk);
-  // shots.json names the same 4 files, in dossier order.
-  try {
-    const manifest = JSON.parse(readFileSync(join(ROOT, 'shots.json'), 'utf8'));
-    const names = manifest.map((m) => m.name);
-    check('shots.json lists the screenshots on disk',
-      names.length === shots.length && names.every((n, i) => n === shots.slice().sort()[i]),
-      'manifest: ' + names.join(', ') + ' / disk: ' + shots.slice().sort().join(', '));
-  } catch (e) {
-    check('shots.json lists the screenshots on disk', false, String(e.message).slice(0, 120));
-  }
+  S.missions = createMissions(city);
+  return S;
+}
+{
+  const S = missionState();
+  const lm = S.missions.landmarks;
+  eq(lm.cafe.x, -20, 'missions: cafe landmark is the real city cafe (-20)');
+  eq(lm.cafe.z, -10, 'missions: cafe landmark z -10');
+  eq(lm.docks.x, 160, 'missions: docks landmark is the real city docks (160)');
+  eq(lm.docks.z, 50, 'missions: docks landmark z 50');
+  eq(lm.garage.x, 0, 'missions: garage landmark is the real city garage (0)');
+  eq(lm.garage.z, 170, 'missions: garage landmark z 170');
+  eq(lm.safehouse.x, -60, 'missions: safehouse landmark is the real city safehouse (-60)');
+  eq(lm.safehouse.z, 160, 'missions: safehouse landmark z 160');
+  eq(lm.precinct.x, 100, 'missions: precinct landmark is the real city precinct (100)');
+  eq(lm.precinct.z, -80, 'missions: precinct landmark z -80');
+  eq(lm.hospital.x, 120, 'missions: hospital landmark is the real city hospital (120)');
+  eq(lm.hospital.z, -120, 'missions: hospital landmark z -120, not the guessed +90');
+  eq(lm.gunshop.x, 80, 'missions: gunshop landmark is the real city gunshop (80)');
+  eq(lm.gunshop.z, 40, 'missions: gunshop landmark z 40, not the guessed -40');
+  eq(lm.beachfront.x, -168, 'missions: beachfront landmark on the beach avenue (-168)');
+  t(S.missions.pickups.length === 6, 'missions: 6 cash pickups placed');
+  t(S.missions.pickups.every((p) => p.amount >= 25 && p.amount <= 55 && !p.taken), 'missions: pickups $25-55, untaken');
+  eq(missionObjective(S), "Go to Rosa's café", 'missions: M0 objective is the café');
+  // M0 -> M1: walk into the café.
+  S.player.x = -20;
+  S.player.z = -10;
+  updateMissions(S, 0.1);
+  eq(S.missions.index, 1, 'missions: reaching the café starts M1');
+  eq(S.missions.step, 'pickup', 'missions: M1 step is pickup');
+  eq(S.missions.marker.x, 160, 'missions: M1 marker is the docks');
+  eq(missionObjective(S), 'Collect the package at the docks', 'missions: M1 pickup objective');
+  // M1 pickup -> deliver: walk into the docks on foot.
+  S.player.x = 160;
+  S.player.z = 50;
+  updateMissions(S, 0.1);
+  eq(S.missions.step, 'deliver', 'missions: collecting the package starts the delivery');
+  eq(S.missions.timer, 150, 'missions: delivery timer is 150 s');
+  eq(S.missions.marker.x, -20, 'missions: delivery marker is back at the café');
+  // M1 deliver -> M2: reach the café in time.
+  S.player.x = -20;
+  S.player.z = -10;
+  updateMissions(S, 0.1);
+  eq(S.player.money, 450, 'missions: M1 pays $300 (150 + 300)');
+  eq(S.missions.index, 2, 'missions: M1 complete starts M2');
+  eq(S.missions.step, 'steal', 'missions: M2 step is steal');
+  t(!!S.missions.targetCar, 'missions: M2 marks a target car');
+  t(Math.hypot(S.missions.targetCar.x + 168, S.missions.targetCar.z) < 15, 'missions: M2 target is the beachfront car');
+  eq(missionObjective(S), 'Steal the yellow sports car at the beachfront', 'missions: M2 steal objective');
+  // M2 steal -> deliver: get in the target car.
+  S.player.car = S.missions.targetCar;
+  S.player.onFoot = false;
+  S.player.x = S.missions.targetCar.x;
+  S.player.z = S.missions.targetCar.z;
+  updateMissions(S, 0.1);
+  eq(S.missions.step, 'deliver', 'missions: stealing the car starts the M2 delivery');
+  eq(S.missions.marker.x, 0, 'missions: M2 delivery marker is the garage');
+  eq(S.police.stars, 2, 'missions: stealing the target car raises 2 stars');
+  // M2 deliver -> M3: bring it to the garage in the car.
+  S.player.x = 0;
+  S.player.z = 170;
+  updateMissions(S, 0.1);
+  eq(S.player.money, 950, 'missions: M2 pays $500 (450 + 500)');
+  eq(S.missions.index, 3, 'missions: M2 complete starts M3');
+  eq(S.missions.step, 'escape', 'missions: M3 step is escape');
+  eq(S.police.stars, 3, 'missions: M3 starts with 3 stars');
+  // M3 -> free roam: reach the safehouse.
+  S.player.x = -60;
+  S.player.z = 160;
+  updateMissions(S, 0.1);
+  eq(S.player.money, 1750, 'missions: M3 pays $800 (950 + 800)');
+  eq(S.missions.index, 4, 'missions: M3 complete enters free roam');
+  eq(S.police.stars, 0, 'missions: reaching the safehouse clears the heat');
+  eq(S.missions.taxi.state, 'pickup', 'missions: free roam starts a taxi job');
+  t(!!S.missions.taxi.customer, 'missions: taxi customer placed');
+  // Taxi: pick up, then drop off.
+  const fareBefore = S.player.money;
+  S.player.x = S.missions.taxi.customer.x;
+  S.player.z = S.missions.taxi.customer.z;
+  updateMissions(S, 0.1);
+  eq(S.missions.taxi.state, 'dropoff', 'missions: reaching the customer starts the drop-off');
+  t(S.missions.taxi.fare >= 25, `missions: taxi fare set ($${S.missions.taxi.fare})`);
+  const fare = S.missions.taxi.fare;
+  S.player.x = S.missions.taxi.dest.x;
+  S.player.z = S.missions.taxi.dest.z;
+  updateMissions(S, 0.1);
+  eq(S.player.money, fareBefore + fare, 'missions: taxi fare is paid on drop-off');
+  eq(S.missions.taxi.state, 'pickup', 'missions: a new taxi job starts after drop-off');
+  // Mission fail -> retry: M1 delivery timer runs out.
+  const S2 = missionState();
+  S2.missions.index = 1;
+  S2.missions.step = 'deliver';
+  S2.missions.timer = 0.01;
+  S2.player.x = 100;
+  S2.player.z = 100;
+  updateMissions(S2, 0.1);
+  eq(S2.missions.needsRetry, true, 'missions: expired timer flags a retry');
+  updateMissions(S2, 0.1);
+  eq(S2.missions.needsRetry, false, 'missions: retry restarts the mission');
+  eq(S2.missions.index, 1, 'missions: retry restarts the same mission');
+  // Cash pickup: walking over one banks it.
+  const S3 = missionState();
+  const pk = S3.missions.pickups[0];
+  const before = S3.player.money;
+  S3.player.x = pk.x;
+  S3.player.z = pk.z;
+  updateMissions(S3, 0.1);
+  eq(pk.taken, true, 'missions: cash pickup is taken on contact');
+  eq(S3.player.money, before + pk.amount, 'missions: cash pickup pays its amount');
 }
 
-// ---------------------------------------------------------------------------
-console.log('== main.ts build ==');
-{
-  const shotsDir = join(ROOT, 'screenshots');
-  const shots = existsSync(shotsDir)
-    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f)) : [];
-  if (shots.length === 0) {
-    skip('main.ts run (no screenshots yet)', 'run tests/shots.py first');
-  } else {
-    const outA = join(ROOT, 'out-test-a');
-    const outB = join(ROOT, 'out-test-b');
-    try {
-      // Two runs into two fresh directories: the build must be
-      // deterministic (byte-identical), or the gate's dossier check fails.
-      for (const outDir of [outA, outB]) {
-        rmSync(outDir, { recursive: true, force: true });
-        execFileSync(process.execPath, ['main.ts'], {
-          cwd: ROOT,
-          env: { ...process.env, MAKEFUN_OUTPUT_DIR: outDir },
-          stdio: 'pipe',
-        });
-      }
-      check('main.ts writes out/game/', existsSync(join(outA, 'game', 'index.html')));
-      check('main.ts writes out/screenshots/', existsSync(join(outA, 'screenshots', shots[0])));
-      check('main.ts writes out/dossier.json', existsSync(join(outA, 'dossier.json')));
-      const dA = readFileSync(join(outA, 'dossier.json'));
-      const dB = readFileSync(join(outB, 'dossier.json'));
-      check('main.ts is deterministic (two runs byte-identical)', dA.equals(dB), `${dA.length} vs ${dB.length} bytes`);
-      let schemaOk = false;
-      try {
-        schemaOk = JSON.parse(dA.toString('utf8')).schema === 'makefun/dossier/v1';
-      } catch { schemaOk = false; }
-      check('dossier.json has the makefun/dossier/v1 schema', schemaOk);
-    } catch (e) {
-      check('main.ts runs', false, String(e.message).slice(0, 200));
-    } finally {
-      rmSync(outA, { recursive: true, force: true });
-      rmSync(outB, { recursive: true, force: true });
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-console.log('== serve.ts ==');
-{
-  // Serve game/ on an uncommon port and check the reads-only contract:
-  // GET serves, HEAD answers with headers and no body, POST is refused,
-  // a missing file is a 404.
-  const port = 18123;
-  const base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['serve.ts', '--port', String(port)], {
-    cwd: ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const stop = () => { try { child.kill(); } catch { /* already gone */ } };
-  const waitUp = async () => {
-    const deadline = Date.now() + 10000;
-    while (Date.now() < deadline) {
-      try {
-        const r = await fetch(`${base}/index.html`, { signal: AbortSignal.timeout(1000) });
-        if (r.status === 200) return true;
-      } catch { /* not up yet */ }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    return false;
+// ================= combat =================
+function combatState() {
+  return {
+    player: { x: 0, z: 0, heading: 0, hp: 100, money: 200, car: null, speed: 0 },
+    combat: createCombat(),
+    peds: [],
+    police: createPolice(),
+    missions: { landmarks: { gunshop: { x: 80, z: 40 }, cafe: { x: -20, z: -10 }, hospital: { x: 120, z: -120 } } },
+    save: { stats: {} },
+    time: 0,
+    messages: [],
+    audio: null,
+    effects: null,
+    rng: mulberry32(7),
   };
-  try {
-    const up = await waitUp();
-    check('serve.ts serves game/index.html (GET 200)', up);
-    if (up) {
-      const get = await fetch(`${base}/index.html`, { signal: AbortSignal.timeout(5000) });
-      const html = await get.text();
-      check('GET /index.html is the game page', html.includes('game-canvas'));
-      const head = await fetch(`${base}/index.html`, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
-      const headBody = await head.text();
-      check('HEAD answers 200 with no body', head.status === 200 && headBody === '');
-      const post = await fetch(`${base}/index.html`, { method: 'POST', signal: AbortSignal.timeout(5000) });
-      check('POST is refused (405)', post.status === 405);
-      const missing = await fetch(`${base}/no-such-file.js`, { signal: AbortSignal.timeout(5000) });
-      check('Missing file is a 404', missing.status === 404);
-    } else {
-      check('GET /index.html is the game page', false, 'server did not come up');
-      check('HEAD answers 200 with no body', false, 'server did not come up');
-      check('POST is refused (405)', false, 'server did not come up');
-      check('Missing file is a 404', false, 'server did not come up');
-    }
-  } catch (e) {
-    check('serve.ts answers', false, String(e.message).slice(0, 200));
-  } finally {
-    stop();
-  }
+}
+{
+  const S = combatState();
+  eq(S.combat.weapon, 'fists', 'combat: starts with fists');
+  eq(S.combat.mag, 12, 'combat: pistol mag is 12');
+  const ped = { x: 0, z: 1.5, heading: 0, hp: 100 };
+  S.peds = [ped];
+  punch(S);
+  eq(ped.hp, 85, 'combat: punch deals 15 damage');
+  eq(ped.fleeT, 3, 'combat: punched ped flees');
+  eq(S.police.stars, 1, 'combat: punching a ped raises 1 star');
+  eq(S.combat.cooldown, 0.4, 'combat: punch sets a 0.4 s cooldown');
+  punch(S);
+  eq(ped.hp, 85, 'combat: punch is blocked during cooldown');
+  updateCombat(S, 0.5);
+  eq(S.combat.cooldown, 0, 'combat: cooldown ticks down');
+  switchWeapon(S, 'pistol');
+  eq(S.combat.weapon, 'pistol', 'combat: switch to pistol');
+  eq(S.combat.ammo, 12, 'combat: first arming grants a starter mag');
+  const far = { x: 0, z: 10, heading: 0, hp: 100 };
+  S.peds = [far];
+  shoot(S);
+  eq(S.combat.ammo, 11, 'combat: shooting spends one round');
+  eq(far.hp, 75, 'combat: pistol deals 25 damage inside 30 m');
+  updateCombat(S, 0.3);
+  const distant = { x: 0, z: 40, heading: 0, hp: 100 };
+  S.peds = [distant];
+  shoot(S);
+  eq(distant.hp, 88, 'combat: pistol damage falls off past 30 m (12 dmg)');
+  // Reload: empty the mag, reload, wait it out.
+  S.combat.ammo = 5;
+  reload(S);
+  eq(S.combat.reloading, true, 'combat: reload starts');
+  updateCombat(S, 0.6);
+  eq(S.combat.ammo, 5, 'combat: still reloading halfway');
+  updateCombat(S, 0.7);
+  eq(S.combat.ammo, 12, 'combat: reload refills the mag after 1.2 s');
+  eq(S.combat.reloading, false, 'combat: reload finishes');
+  // Shooting a cop 4 times disables it.
+  const copCar = { x: 0, z: 10, heading: 0, speed: 0, hp: 100 };
+  const cop = { car: copCar, x: 0, z: 10, heading: 0, speed: 0, hp: 100, disabled: false, mesh: null };
+  S.police.cops = [cop];
+  S.peds = [];
+  for (let i = 0; i < 4; i++) { updateCombat(S, 0.3); shoot(S); }
+  eq(cop.hp, 0, 'combat: 4 pistol hits drop a cop to 0 hp');
+  eq(cop.disabled, true, 'combat: a cop at 0 hp is disabled');
+  // Ammo shop: only at the gun shop, $50 for a full mag.
+  const S2 = combatState();
+  S2.combat.ammo = 0;
+  eq(buyAmmo(S2), false, 'combat: cannot buy ammo away from the gun shop');
+  S2.player.x = 80;
+  S2.player.z = 40;
+  eq(buyAmmo(S2), true, 'combat: ammo bought at the gun shop');
+  eq(S2.player.money, 150, 'combat: ammo costs $50 (200 - 50)');
+  eq(S2.combat.ammo, 12, 'combat: bought ammo fills the mag');
+  // Healing at the hospital and the café.
+  const S3 = combatState();
+  S3.player.hp = 40;
+  eq(healPlayer(S3), false, 'combat: no healing away from café/hospital');
+  S3.player.x = 120;
+  S3.player.z = -120;
+  eq(healPlayer(S3), true, 'combat: healing works at the hospital');
+  eq(S3.player.hp, 90, 'combat: healing restores 50 hp');
+  S3.player.x = -20;
+  S3.player.z = -10;
+  eq(healPlayer(S3), true, 'combat: healing works at the café');
+  eq(S3.player.hp, 100, 'combat: healing caps at 100 hp');
 }
 
-// ---------------------------------------------------------------------------
-console.log(`\n${passed} passed, ${failed} failed, ${skipped} skipped`);
-process.exit(failed > 0 ? 1 : 0);
+// ================= save =================
+{
+  const S = {
+    player: { money: 500 },
+    missions: { index: 2 },
+    save: { stats: { missionsDone: 1, carsStolen: 3, busted: 0, bestCash: 400 } },
+    audio: { muted: true },
+  };
+  eq(saveGame(S), true, 'save: saveGame writes');
+  const loaded = loadSave();
+  eq(loaded.money, 500, 'save: money round-trips');
+  eq(loaded.missionIndex, 2, 'save: mission index round-trips');
+  eq(loaded.stats.carsStolen, 3, 'save: stats round-trip');
+  eq(loaded.stats.bestCash, 500, 'save: bestCash tracks the max');
+  eq(loaded.muted, true, 'save: mute round-trips');
+  // Corrupt primary, valid backup -> fallback.
+  globalThis.localStorage.setItem(SAVE_KEY, '###not json###');
+  globalThis.localStorage.setItem(`${SAVE_KEY}.bak`, JSON.stringify({ money: 77, missionIndex: 1, stats: {}, muted: false }));
+  const fb = loadSave();
+  eq(fb && fb.money, 77, 'save: corrupt primary falls back to .bak');
+  globalThis.localStorage.setItem(`${SAVE_KEY}.bak`, '###also corrupt###');
+  eq(loadSave(), null, 'save: corrupt primary and backup load as nothing');
+  globalThis.localStorage = fakeStorage();
+  eq(loadSave(), null, 'save: no save loads as nothing');
+  const noStore = globalThis.localStorage;
+  delete globalThis.localStorage;
+  eq(saveGame(S), false, 'save: saveGame fails cleanly with no storage');
+  globalThis.localStorage = noStore;
+}
+
+// ================= effects =================
+{
+  const S = { effects: createEffects(sceneStub), scene: sceneStub, rng: mulberry32(7) };
+  eq(S.effects.list.length, 0, 'effects: starts empty');
+  spawnSmoke(S, { x: 0, y: 1, z: 0 });
+  eq(S.effects.list.length, 10, 'effects: smoke spawns 10 particles');
+  spawnSparks(S, { x: 0, y: 1, z: 0 });
+  eq(S.effects.list.length, 22, 'effects: sparks add 12 particles');
+  muzzleFlash(S, { x: 0, y: 1.3, z: 0 }, { x: 0, y: 0, z: 1 });
+  eq(S.effects.list.length, 27, 'effects: muzzle flash adds 5 particles');
+  tireSmoke(S, { x: 5, z: 5 });
+  eq(S.effects.list.length, 28, 'effects: tire smoke adds 1 particle');
+  updateEffects(S, 2);
+  eq(S.effects.list.length, 0, 'effects: all particles expire after their life');
+}
+
+// ================= shots =================
+{
+  globalThis.window = { location: { search: '?shot=3&seed=7' }, __GTA: undefined, __shotReady: false };
+  eq(JSON.stringify(getShotParams()), JSON.stringify({ shot: 3, seed: 7 }), 'shots: ?shot=3&seed=7 parses');
+  globalThis.window.location.search = '?shot=9&seed=1';
+  eq(getShotParams().shot, 0, 'shots: out-of-range shot is ignored');
+  globalThis.window.location.search = '';
+  eq(JSON.stringify(getShotParams()), JSON.stringify({ shot: 0, seed: 7 }), 'shots: no params default to shot 0, seed 7');
+  const S = {
+    player: { x: 0, z: 20, heading: 0, hp: 100, money: 150, car: null, speed: 0 },
+    parkedCars: [createCar({ x: 25, z: -12, heading: 0 }), createCar({ x: -25, z: 12, heading: 0 })],
+    cars: [],
+    trafficCars: [],
+    peds: [],
+    police: createPolice(),
+    missions: createMissions(city),
+    messages: [],
+    time: 0,
+    camHeading: 0,
+    objective: '',
+    shot: 0,
+    shotFrames: 0,
+    shotReady: false,
+    mode: 'title',
+  };
+  S.cars = S.parkedCars;
+  stageShot(S, 3);
+  eq(S.mode, 'shot', 'shots: staging sets shot mode');
+  eq(S.player.x, 0, 'shots: on-foot shot stages the player in the plaza');
+  eq(S.player.z, 12, 'shots: on-foot shot stages the player at z 12');
+  eq(S.player.car, null, 'shots: on-foot shot has no car');
+  eq(S.missions.marker.x, -20, 'shots: on-foot shot marker is the café');
+  markShotFrame(S);
+  eq(S.shotReady, false, 'shots: not ready after one frame');
+  markShotFrame(S);
+  eq(S.shotReady, true, 'shots: ready after two frames');
+  eq(globalThis.window.__shotReady, true, 'shots: window.__shotReady set');
+  exposeGTA(S);
+  eq(globalThis.window.__GTA.screen, 'play', 'shots: __GTA screen is play for the on-foot shot');
+  eq(globalThis.window.__GTA.money, 150, 'shots: __GTA money');
+  eq(globalThis.window.__GTA.mission, 0, 'shots: __GTA mission index');
+  eq(globalThis.window.__GTA.z, 12, 'shots: __GTA carries the player position');
+  eq(globalThis.window.__GTA.inCar, false, 'shots: __GTA inCar false on foot');
+  stageShot(S, 2);
+  exposeGTA(S);
+  eq(globalThis.window.__GTA.screen, 'title', 'shots: __GTA screen is title for shot 2');
+  stageShot(S, 4);
+  eq(S.missions.marker.x, 160, 'shots: mission shot marker is the docks');
+  eq(S.missions.index, 1, 'shots: mission shot stages M1');
+}
+
+// ================= camera =================
+{
+  const { scene, camera } = createScene();
+  t(!!scene && !!camera, 'camera: createScene returns scene + camera');
+  const S = { mode: 'title', time: 0, player: { x: 0, z: 0, heading: 0, car: null }, camHeading: 0 };
+  const px = camera.position.x;
+  updateCamera(camera, S, 0.016);
+  t(camera.position.x !== px, 'camera: title orbit moves the camera');
+  // Shot 4 (docks, on foot): the camera snaps to the staged over-shoulder spot.
+  S.mode = 'shot';
+  S.shot = 4;
+  S.player = { x: 150, z: 10, heading: Math.PI / 2, car: null };
+  S.camHeading = Math.PI / 2;
+  updateCamera(camera, S, 0.016);
+  approx(camera.position.x, 145.5, 0.01, 'camera: shot 4 snaps behind the player (x)');
+  approx(camera.position.y, 3.1, 0.01, 'camera: shot 4 snaps to over-shoulder height');
+  approx(camera.position.z, 10, 0.01, 'camera: shot 4 snaps behind the player (z, heading PI/2 faces +x)');
+  // Shot 2 (title): orbit, snapped.
+  S.shot = 2;
+  S.time = 0;
+  updateCamera(camera, S, 0.016);
+  approx(camera.position.x, 55, 0.01, 'camera: title shot snaps to the orbit position');
+  approx(camera.position.y, 26, 0.01, 'camera: title shot snaps to orbit height');
+}
+
+// ================= summary =================
+if (failures.length === 0) {
+  console.log(`selftest: ${n}/${n} asserts passed`);
+} else {
+  console.log(`selftest: ${n - failures.length}/${n} asserts passed`);
+  for (const f of failures) console.log(`  FAIL: ${f}`);
+  process.exit(1);
+}

@@ -1,72 +1,124 @@
-# Solmar Bay — Make GTA 6
+# Solmar Bay — a GTA-style open-world game for make.fun `gta6-01`
 
-[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![rank](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![reward](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01)
+[![rank](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/rank.svg)](https://make.fun/bounty/gta6-01)
+[![reward](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/reward.svg)](https://make.fun/bounty/gta6-01)
 
-An open-world crime game in the browser, built for the make.fun **gta6-01 "Make GTA 6"** bounty. You are Dario "D" Cruz, a driver for hire in Solmar Bay — a 400×400 m coastal city at golden hour, 17:40. Run jobs for Mama Rosa, steal cars, dodge the SBPD, and build your cash.
+An original open-world crime game in a sun-soaked coastal city: steal cars,
+dodge the cops, run jobs for a fixer, and make it out rich. GTA in spirit,
+100% original content — no Rockstar names, logos, characters, maps or assets.
 
-**Original work.** Every line of this game was written for this bounty: the city, the driving and on-foot controls, the police, the missions, the combat, the HUD, the minimap, the audio and the art are all original. No assets, code or levels were copied from any GTA game or any other game. Three.js is vendored as a library only (`game/vendor/three/`).
+- **Game:** SOLMAR BAY. **City:** Solmar Bay — beachfront, pier, market
+  plaza, port/docks, downtown towers, barrios.
+- **Protagonist:** Dario "D" Cruz, 28, a getaway driver who owes money to the
+  wrong people. **Fixer:** Mama Rosa, who runs a café in the market plaza.
+- **Pressure:** the Solmar Bay Police Department (SBPD) — wanted stars,
+  patrol cars, roadblocks, busted.
 
-## How to play
+## Play it
 
-- **Start:** press Enter (or click Start) on the title screen.
-- **Move:** WASD to walk (Shift to run), mouse to look. W/S drive a car once you're in one; A/D steer, Shift is the handbrake.
-- **Enter / steal a car:** walk up to one and press E. Stealing in front of a pedestrian or a police car raises your wanted level.
-- **Missions:** go to Rosa's café (follow the yellow marker) to start a job. Three story missions — *The Pickup* ($300), *Hot Wheels* ($500), *The Getaway* ($800) — plus repeatable taxi fares ($45) and cash pickups ($25).
-- **Wanted:** the SBPD chases you with cars (1–5 stars) and on-foot cops (3+ stars). Lose them by staying out of sight for 15 s, then the heat cools one star per 10 s. Get caught and you're Busted (−$200, respawn at the precinct). Die and you're Wasted (−$100, respawn at the hospital).
-- **Fight:** F punches, click shoots the pistol (buy ammo at the gun shop, $50 for 12 rounds), R reloads, 1/2 switch weapons. The café and the hospital heal you.
-- **Save:** the game autosaves every 30 s and on pause; your cash, mission progress and best cash survive a reload. M mutes, Esc / P pauses.
+Serve `game/` and open it in a desktop browser (keyboard + mouse, no
+network request, everything offline, three.js vendored under `game/`):
+
+```sh
+node serve.ts
+# open http://localhost:8080
+```
+
+Or open `game/index.html` directly from any static file server.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
-| WASD | Walk / drive |
-| Shift | Run on foot / handbrake while driving |
-| Mouse | Look (click to lock the pointer) |
-| E | Enter / exit a car |
+| WASD | Move / drive (W accel, S brake/reverse, A/D steer) |
+| Shift | Run / handbrake |
+| Mouse | Look (click canvas for pointer lock) |
+| E | Enter / exit car, steal a parked car |
 | F | Punch |
-| Click | Shoot (pistol) |
+| Left click | Shoot pistol (when armed) |
 | R | Reload |
 | 1 / 2 | Fists / pistol |
-| H | Honk (scares pedestrians) |
+| B | Buy ammo ($50, at the gun shop) |
+| H | Honk |
 | M | Mute |
 | Esc / P | Pause |
+| Enter | Confirm on the title screen |
 
-## Run it
+## The game
 
-```sh
-node serve.ts            # serves game/ on http://localhost:8080
-```
-
-Open http://localhost:8080 and press Enter. No build step, no network — the game is plain static files and the vendored Three.js library.
+- **City:** 8×8 blocks, ~400×400 m — beachfront avenue and pier, market
+  plaza with stalls and Rosa's café, downtown towers with neon signs,
+  port/docks with containers and cranes, colourful barrios.
+- **Driving:** arcade physics (accel, top speed, braking, reverse,
+  handbrake drift, damage and smoke), 10 traffic cars that follow street
+  loops and stop at red lights, 8 stealable parked cars, 24 pedestrians.
+- **Wanted + police:** 0–5 stars. Stealing, hitting peds, shooting and
+  speeding raise heat; 15 s out of sight starts a cooldown. Police chase,
+  ram, and set roadblocks at 3+ stars. Get busted and you lose $200 and
+  wake up at the precinct.
+- **Missions (Mama Rosa):** M0 intro at the café → M1 "The Pickup"
+  (docks, 150 s, $300) → M2 "Hot Wheels" (steal the yellow sports car at
+  the beachfront, $500) → M3 "The Getaway" (reach the safehouse with
+  3 stars on you, $800) → free roam with repeatable taxi jobs and mission
+  replays at half reward.
+- **Combat:** fists (15 dmg) and a 12-round pistol (25 dmg, falloff past
+  30 m), ammo at the gun shop, medkits at the café and hospital.
+- **HUD + minimap:** cash, wanted stars, health, weapon/ammo, objective
+  + distance, speed, the 17:40 golden-hour clock, a message feed, and a
+  160×160 north-up minimap (streets, beach, player arrow, traffic,
+  police blips, mission marker).
+- **Audio:** all WebAudio synth, no files — engine hum, two-tone siren,
+  chord pad (Am–F–C–G), gunshot/punch/pickup/jingle/busted/honk SFX.
+- **Save:** `localStorage` key `solmar-bay-save-v1` (with `.bak` fallback):
+  money, mission progress, stats, mute. Continue on the title screen.
 
 ## Screenshots
 
-Four dossier images, all 1280×720 and under the 256 KiB cap:
+Deterministic staged shots, `?shot=1..4&seed=7` — the game exposes
+`window.__GTA` (`shotReady`, `screen`, `wanted`, `money`, `mission`,
+`step`, `speed`, `x`, `z`, `heading`, `inCar`) and sets
+`window.__shotReady` after staging each shot.
 
-1. **1-hero.jpg** — the cover: the silver car, rear view, on the road at golden hour (the maker's image, resized to 1280×720 only).
-2. **2-title.jpg** — the title screen over the living city (`?shot=title&seed=7`).
-3. **3-onfoot.jpg** — Dario on foot in the market plaza, peds around, the café sign in frame (`?shot=onfoot&seed=7`).
-4. **4-mission.jpg** — M1 at the docks: package marker glowing, Rosa's line on the HUD (`?shot=mission&seed=7`).
+| File | Shot |
+| --- | --- |
+| `screenshots/1-hero.jpg` | Key art supplied by the entrant, resized to 1280×720 |
+| `screenshots/2-title.jpg` | `?shot=2` — title screen over the city |
+| `screenshots/3-onfoot.jpg` | `?shot=3` — Dario on foot in the market plaza |
+| `screenshots/4-mission.jpg` | `?shot=4` — M1 at the docks |
 
-The in-game shots are staged deterministically (`game/src/shots.js`) from a fresh world with a scripted autopilot, so they reproduce exactly. The 3-star chase (`?shot=chase&seed=7` — yellow sports car, three SBPD cruisers closing in at 86 km/h) is staged the same way and covered by the self-test, even though it is not one of the four dossier files.
+## Layout
 
-## Tech
-
-- Three.js (vendored `three.module.min.js`) for the 3D city: instanced buildings with lit windows, a painted ground texture (asphalt, sidewalks, lane dashes, sand, plaza), the sea, the pier and streetlights; bright golden-hour light (sun 4.2, hemisphere 1.0, exposure 1.32).
-- Fixed 1/60 s simulation: player, arcade car physics, traffic loops, pedestrian A* fleeing, police A* pursuit + roadblocks + busts, a 3-mission story chain, taxi jobs, cash pickups, combat, save/load, WebAudio synth (engine hum, sirens, SFX, music pad) and a particle / camera-shake effects layer.
-- `main.ts` (Node 22, stdlib only) hands the entry in: it copies `game/` + `screenshots/` to the output directory and writes `dossier.json` with `buildDossier` from `vendor/makefun-game.ts`, deterministically — two runs are byte-identical.
+```text
+game/                 the playable game (static files, offline)
+  index.html          page, HUD, title/pause/busted/wasted screens
+  src/                one module per system
+    config.js random.js city.js render.js vehicle.js player.js
+    traffic.js input.js police.js missions.js combat.js hud.js
+    minimap.js audio.js save.js effects.js shots.js main.js
+  vendor/three/       vendored three.js (module + core builds)
+screenshots/          4 JPEGs, each ≤ 256 KiB, 1280×720
+tests/                node selftest + headless-browser shots/playtest
+main.ts               entry program: copies game/ + screenshots/ to
+                      /output and writes /output/dossier.json
+serve.ts              static server for game/ on localhost:8080
+shots.json            the 4 screenshot definitions
+```
 
 ## Tests
 
 ```sh
-node --import ./tests/register-three.mjs tests/selftest.mjs   # headless: RNG, A*, missions, police, combat, save, shots, dossier caps, main.ts, serve.ts
-~/workspace/tools/pw-venv/bin/python tests/shots.py           # retake 2-title / 3-onfoot / 4-mission (needs node serve.ts; 1-hero.jpg is never overwritten)
-~/workspace/tools/pw-venv/bin/python tests/playtest.py        # browser playtest: boot, walk, drive, wanted, mission, HUD
+node --import ./tests/register-three.mjs tests/selftest.mjs   # pure-logic, no browser
+python3 tests/shots.py    # headless render of shots 2-4 + hero resize, 0 console errors
+python3 tests/playtest.py # headless play: title -> walk -> steal car -> drive -> M1
+```
+
+## Handing in
+
+```sh
+mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts   # writes out/dossier.json
 ```
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Shanumameyra.

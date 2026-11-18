@@ -1,239 +1,189 @@
-// Solmar Bay — arcade car physics + enter/steal (Worker A, v3 rebuild).
-// Arcade, not simulation: instant-feeling accel, speed-sensitive steering,
-// handbrake drift, forgiving collisions. Heading convention: forward =
-// (sin(angle), 0, cos(angle)); angle 0 = +z (south), PI = -z (north).
-
+// Solmar Bay — vehicles: arcade driving, damage, meshes. Logic is pure;
+// mesh builders take THREE as a parameter so this module stays three-free.
 import { CONFIG } from './config.js';
-import { collideCircle } from './city.js';
+import { collidesWithBuildings } from './city.js';
 
-let carSeq = 0;
+export const CAR_COLORS = [
+  '#c94a3a', '#3a7ac9', '#d8a03a', '#3a9e6a', '#e8e4da',
+  '#2e2e34', '#7a5ac9', '#e86aa0', '#4ad8d0', '#f2f2f2',
+];
 
-// Full contract car shape (see NOTES.md). `opts` overrides fields:
-// { id, color, isParked, isTraffic, isPolice, driver, route, routeIdx }.
-export function createCar(model, x, z, angle, opts = {}) {
-  const def = CONFIG.CAR_MODELS[model] || CONFIG.CAR_MODELS.sedan;
-  const car = {
-    id: opts.id || `car${carSeq++}`,
-    kind: model,
-    model,
-    name: def.name,
-    x,
-    z,
-    angle,
-    speed: 0,
-    steer: 0,
-    hp: CONFIG.CAR.HP,
-    maxHp: CONFIG.CAR.HP,
-    topSpeed: opts.topSpeed || def.topSpeed,
-    color: opts.color !== undefined ? opts.color : def.colors[0],
-    len: def.len,
-    wid: def.wid,
-    hgt: def.hgt,
-    isParked: !!opts.isParked,
-    isTraffic: !!opts.isTraffic,
-    isPolice: model === 'police' || !!opts.isPolice,
-    lightBar: model === 'police' || !!opts.isPolice,
-    driver: opts.driver || null, // 'player' | 'traffic' | 'police' | null
-    route: opts.route || null,
-    routeIdx: opts.routeIdx || 0,
-    stopped: false,
-    drift: 0,
+let _nextId = 1;
+
+export function createCar(options = {}) {
+  const kind = options.kind || 'sedan';
+  return {
+    id: options.id !== undefined ? options.id : _nextId++,
+    kind,
+    x: options.x || 0,
+    z: options.z || 0,
+    heading: options.heading || 0,
+    speed: options.speed || 0,
+    hp: CONFIG.CAR.hp,
+    color: options.color || CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)],
+    mesh: null,
     smoke: false,
     stalled: false,
-    damageFlash: 0,
   };
-  return car;
 }
 
-// Drive the player's car one fixed step.
-// drive = { moveX (-1..1 steer), moveZ (-1..1: +1 accel, -1 brake/reverse),
-//           run (handbrake), honk }.
-export function stepCar(state, car, dt, drive, world, systems) {
-  if (car.stalled || car.hp <= 0) {
-    car.speed *= Math.max(0, 1 - 2.5 * dt);
-    if (Math.abs(car.speed) < 0.05) car.speed = 0;
-    car.smoke = true;
-  } else {
-    const top = car.topSpeed;
-    const speedAbs = Math.abs(car.speed);
-    // Steering: full lock at low speed, easing off as speed rises.
-    const maxSteer = 0.55 / (1 + speedAbs * 0.045);
-    const targetSteer = (drive.moveX || 0) * maxSteer;
-    car.steer += (targetSteer - car.steer) * Math.min(1, dt * 8);
-    // Throttle / brake / reverse.
-    if (drive.moveZ > 0) {
-      car.speed += CONFIG.CAR.ACCEL * dt * (car.speed < 0 ? 1.6 : 1);
-    } else if (drive.moveZ < 0) {
-      if (car.speed > 0.5) car.speed -= CONFIG.CAR.BRAKE * dt;
-      else car.speed -= CONFIG.CAR.REVERSE * dt;
-    } else {
-      // Rolling drag.
-      car.speed -= car.speed * 0.6 * dt;
-      if (Math.abs(car.speed) < 0.05) car.speed = 0;
-    }
-    if (car.speed > top) car.speed = top;
-    if (car.speed < -CONFIG.CAR.REVERSE) car.speed = -CONFIG.CAR.REVERSE;
-    // Handbrake drift: loose rear, faster yaw, speed bleed, tire smoke flag.
-    if (drive.run && speedAbs > 5) {
-      car.drift = Math.min(1, car.drift + dt * 2.5);
-      car.speed *= Math.max(0, 1 - 0.35 * dt);
-    } else {
-      car.drift = Math.max(0, car.drift - dt * 3);
-    }
-    car.smoke = car.hp < 35;
-  }
-  if (car.damageFlash > 0) car.damageFlash = Math.max(0, car.damageFlash - dt * 2);
+export function createCarMesh(car, THREE) {
+  const g = new THREE.Group();
+  const bodyColor = car.kind === 'police' ? 0xffffff : new THREE.Color(car.color);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.35, metalness: 0.5 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a2028, roughness: 0.25, metalness: 0.6 });
 
-  // Yaw: bicycle-ish turn rate, sharper while drifting, reversed in reverse.
-  const turnRate = car.steer * (car.speed / (car.len * 0.9)) * (car.drift > 0.3 ? 1.6 : 1);
-  car.angle += turnRate * dt * (car.speed >= 0 ? 1 : -1);
+  const long = car.kind === 'truck' ? 5.4 : car.kind === 'sports' ? 4.4 : 4.2;
+  const wide = car.kind === 'truck' ? 2.2 : 1.9;
 
-  // Integrate + collide with buildings / sea / bounds.
-  const nx = car.x + Math.sin(car.angle) * car.speed * dt;
-  const nz = car.z + Math.cos(car.angle) * car.speed * dt;
-  const res = collideCircle(world.city, nx, nz, car.len * 0.42);
-  if (res.hit && Math.abs(car.speed) > 1) {
-    const impact = Math.abs(car.speed);
-    if (impact > 8) damageCar(state, car, impact * 0.8, world);
-    car.speed *= impact > 8 ? -0.25 : 0.4;
-  }
-  car.x = res.x;
-  car.z = res.z;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(wide, 0.65, long), bodyMat);
+  body.position.y = 0.55;
+  body.castShadow = true;
+  g.add(body);
 
-  // Collide with other cars.
-  collideCars(state, car, world);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(wide * 0.85, 0.55, long * 0.45), darkMat);
+  cabin.position.set(0, 1.12, -long * 0.06);
+  cabin.castShadow = true;
+  g.add(cabin);
 
-  // Mirror onto the player when this is the player's car.
-  if (car.driver === 'player') {
-    const p = state.player;
-    p.speed = car.speed;
-    p.x = car.x;
-    p.z = car.z;
-    p.heading = car.angle;
-    state.stats.distanceDriven += Math.abs(car.speed) * dt;
-  }
-}
-
-// Resolve overlap between `car` and every other car in state.cars.
-// A parked (braked) car is never shoved — the moving car takes the full
-// push. Hard impacts damage both cars.
-export function collideCars(state, car, world) {
-  let hitAny = false;
-  for (const other of state.cars) {
-    if (other === car) continue;
-    const dx = car.x - other.x;
-    const dz = car.z - other.z;
-    const minD = (car.len + other.len) * 0.5 * 0.82;
-    const d2 = dx * dx + dz * dz;
-    if (d2 >= minD * minD || d2 < 1e-6) continue;
-    const d = Math.sqrt(d2);
-    const push = minD - d;
-    const nx = dx / d;
-    const nz = dz / d;
-    if (other.isParked) {
-      car.x += nx * push;
-      car.z += nz * push;
-    } else {
-      car.x += nx * push * 0.5;
-      car.z += nz * push * 0.5;
-      other.x -= nx * push * 0.5;
-      other.z -= nz * push * 0.5;
-    }
-    const relSpeed = Math.abs(car.speed - (other.speed || 0));
-    if (relSpeed > 6) {
-      damageCar(state, car, relSpeed * 1.2, world);
-      if (!other.isParked) damageCar(state, other, relSpeed * 0.8, world);
-      car.speed *= 0.6;
-    }
-    hitAny = true;
-  }
-  return hitAny;
-}
-
-// Damage a car. Pushes {type:'carDamage'} when the driver is the player.
-export function damageCar(state, car, amount, world) {
-  if (!car || car.hp <= 0) return;
-  car.hp = Math.max(0, car.hp - amount);
-  car.damageFlash = 0.3;
-  if (car.hp <= 0) {
-    car.stalled = true;
-    car.smoke = true;
-  }
-  if (car.driver === 'player') {
-    state.events.push({ type: 'carDamage', amount });
-    state.shakeTrauma = Math.min(1, (state.shakeTrauma || 0) + 0.2);
-  }
-}
-
-// Put the player in the driver's seat. The car stops being parked/traffic.
-export function enterCar(state, car) {
-  const p = state.player;
-  p.onFoot = false;
-  p.inCar = true;
-  p.car = car;
-  p.carId = car.id;
-  car.driver = 'player';
-  car.isParked = false;
-  car.isTraffic = false;
-  car.stopped = false;
-  p.x = car.x;
-  p.z = car.z;
-  p.heading = car.angle;
-  p.speed = car.speed;
-}
-
-// Step out beside the car (driver's side, collision-resolved).
-export function exitCar(state) {
-  const p = state.player;
-  const car = p.car;
-  if (!car) {
-    p.onFoot = true;
-    p.inCar = false;
-    return;
-  }
-  // Step out to the car's right side.
-  const rx = Math.cos(car.angle);
-  const rz = -Math.sin(car.angle);
-  const px = car.x + rx * (car.wid / 2 + 0.7);
-  const pz = car.z + rz * (car.wid / 2 + 0.7);
-  const res = collideCircle({ colliders: state.colliders }, px, pz, 0.5);
-  p.x = res.x;
-  p.z = res.z;
-  p.heading = car.angle;
-  p.yaw = car.angle;
-  p.speed = 0;
-  p.onFoot = true;
-  p.inCar = false;
-  p.car = null;
-  p.carId = null;
-  car.driver = null;
-  car.isParked = true;
-  state.events.push({ type: 'exitCar', carId: car.id });
-}
-
-// Steal a parked car. Heat rises only if someone sees it: a police car
-// within 60 m is +2, otherwise a pedestrian within 25 m is +1.
-export function stealCar(state, car, world, systems) {
-  state.stats.carsStolen++;
-  let heat = 0;
-  let reason = '';
-  const policeNear = state.cars.some(
-    (c) => c.isPolice && Math.hypot(c.x - car.x, c.z - car.z) < 60,
-  );
-  if (policeNear) {
-    heat = CONFIG.WANTED.HEAT.STEAL_POLICE;
-    reason = 'steal seen by police';
-  } else {
-    const pedNear = state.peds.some(
-      (pd) => Math.hypot(pd.x - car.x, pd.z - car.z) < 25,
+  if (car.kind === 'police') {
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(wide + 0.02, 0.2, long * 0.9),
+      new THREE.MeshStandardMaterial({ color: 0x2255cc, roughness: 0.5 })
     );
-    if (pedNear) {
-      heat = CONFIG.WANTED.HEAT.STEAL_WITNESSED;
-      reason = 'steal witnessed';
-    }
+    stripe.position.y = 0.62;
+    g.add(stripe);
   }
-  if (heat > 0) world.addHeat(heat, reason);
-  world.pushFeed('Car stolen!');
-  state.events.push({ type: 'steal', carId: car.id, heat });
-  enterCar(state, car);
+
+  if (car.kind === 'sports') {
+    const spoiler = new THREE.Mesh(
+      new THREE.BoxGeometry(wide * 0.9, 0.08, 0.4),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.4, metalness: 0.5 })
+    );
+    spoiler.position.set(0, 1.05, -long / 2 + 0.2);
+    g.add(spoiler);
+  }
+
+  if (car.kind === 'police') {
+    const bar = new THREE.Group();
+    const red = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.16, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff2222, emissiveIntensity: 2 })
+    );
+    red.position.x = -0.35;
+    const blue = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.16, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0x2244ff, emissive: 0x2244ff, emissiveIntensity: 2 })
+    );
+    blue.position.x = 0.35;
+    bar.add(red);
+    bar.add(blue);
+    bar.position.y = 1.5;
+    bar.name = 'lightbar';
+    g.add(bar);
+  }
+
+  // Headlights.
+  const lightMat = new THREE.MeshStandardMaterial({ color: 0xfff2b0, emissive: 0xffedb0, emissiveIntensity: 1.2 });
+  for (const sx of [-0.6, 0.6]) {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.15, 0.08), lightMat);
+    hl.position.set(sx, 0.62, long / 2 + 0.02);
+    g.add(hl);
+  }
+
+  // 4 wheels (cylinders rotated so the axis is across the car).
+  const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.28, 12);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 });
+  const wheelPos = [
+    [-wide / 2, long / 2 - 0.8],
+    [wide / 2, long / 2 - 0.8],
+    [-wide / 2, -long / 2 + 0.8],
+    [wide / 2, -long / 2 + 0.8],
+  ];
+  for (const [wx, wz] of wheelPos) {
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(wx, 0.36, wz);
+    w.castShadow = true;
+    g.add(w);
+  }
+
+  g.position.set(car.x, 0, car.z);
+  g.rotation.y = car.heading;
+  car.mesh = g;
+  return g;
+}
+
+export function updateCar(car, ctl, dt, city) {
+  if (!car || car.stalled) return;
+  const C = CONFIG.CAR;
+  const top = car.kind === 'sports' ? C.sportsTop : C.top;
+
+  // Steering scales down with speed so high-speed turns stay controllable.
+  const speedFactor = 1 / (1 + Math.abs(car.speed) * 0.045);
+  const steer = (ctl.steer || 0) * C.steerMax * speedFactor;
+  if (Math.abs(car.speed) > 0.3) {
+    car.heading += steer * (car.speed / top) * 2.4 * dt * (car.speed < 0 ? -1 : 1);
+  }
+
+  if (ctl.throttle > 0) {
+    car.speed += C.accel * ctl.throttle * dt;
+  } else if (ctl.throttle < 0) {
+    if (car.speed > 0.5) car.speed -= C.brake * dt; // braking
+    else car.speed -= C.reverse * dt; // reversing (throttle is negative)
+    if (car.speed < -C.reverse) car.speed = -C.reverse;
+  } else {
+    // Rolling drag.
+    car.speed -= car.speed * 0.6 * dt;
+    if (Math.abs(car.speed) < 0.05) car.speed = 0;
+  }
+  if (ctl.handbrake) {
+    car.speed -= car.speed * 2.2 * dt;
+    car.heading += steer * 0.9 * dt * (car.speed >= 0 ? 1 : -1);
+  }
+  if (car.speed > top) car.speed = top;
+
+  const fx = Math.sin(car.heading);
+  const fz = Math.cos(car.heading);
+  let nx = car.x + fx * car.speed * dt;
+  let nz = car.z + fz * car.speed * dt;
+
+  if (city) {
+    if (collidesWithBuildings(city, nx, nz, 1.6)) {
+      // Stop and slide: keep the axis that is still free.
+      const slideX = !collidesWithBuildings(city, nx, car.z, 1.6);
+      const slideZ = !collidesWithBuildings(city, car.x, nz, 1.6);
+      if (slideX) car.x = nx;
+      if (slideZ) car.z = nz;
+      if (Math.abs(car.speed) > 6) damageCar(car, Math.abs(car.speed) * 0.9);
+      car.speed *= 0.35;
+      nx = car.x;
+      nz = car.z;
+    } else {
+      car.x = nx;
+      car.z = nz;
+    }
+    const half = city.size / 2 - 3;
+    car.x = Math.max(-half, Math.min(half, car.x));
+    car.z = Math.max(-half, Math.min(half, car.z));
+  } else {
+    car.x = nx;
+    car.z = nz;
+  }
+
+  if (car.mesh) {
+    car.mesh.position.set(car.x, 0, car.z);
+    car.mesh.rotation.y = car.heading;
+  }
+}
+
+export function damageCar(car, amount) {
+  if (!car || car.stalled) return;
+  car.hp -= amount;
+  if (car.hp <= 40) car.smoke = true;
+  if (car.hp <= 0) {
+    car.hp = 0;
+    car.stalled = true;
+    car.speed = 0;
+  }
 }

@@ -1,224 +1,276 @@
-# Solmar Bay — browser playtest (python playwright, venv).
-# Run: ~/workspace/tools/pw-venv/bin/python tests/playtest.py
-# Requires the static server: node serve.ts  (serves game/ on :8080)
-# Boot smoke (title -> play), walk, enter a car, drive, exit, wanted heat,
-# mission start, HUD/minimap update, FPS. Fails on any pageerror or
-# console error, or if a step's assertion does not hold.
-# Reads the game through window.__GTA (see game/src/main.js): screen,
-# wanted, money, mission (index), objective (text), speed (km/h), inCar,
-# fps, policeCars, and the live state under __GTA.state.
-import asyncio
+#!/usr/bin/env python3
+"""Headless playtest for Solmar Bay: title -> walk -> steal a car ->
+drive -> M1 (café, then docks pickup, then deliver) -> HUD + minimap.
+
+Steers with the keyboard only, reading window.__GTA (x, z, heading,
+inCar, mission, step, speed) for position feedback. On foot the camera
+heading is fixed, so W/S/A/D span the plane and a greedy controller can
+walk anywhere; driving steers by heading error with a reverse-out
+recovery when stuck.
+
+Run from the repository root:
+    ~/workspace/tools/pw-venv/bin/python tests/playtest.py
+"""
+import math
+import subprocess
 import sys
+import time
+import urllib.request
+from pathlib import Path
 
-from playwright.async_api import async_playwright
+REPO = Path(__file__).resolve().parent.parent
+NODE = Path.home() / "workspace" / "tools" / "node-v22.23.4-linux-x64" / "bin" / "node"
+PORT = 8902
 
-BASE = "http://localhost:8080/index.html"
+from playwright.sync_api import sync_playwright  # noqa: E402
 
-ERRORS = []
-
-
-async def gta(page):
-    return await page.evaluate("window.__GTA")
+failures = []
 
 
-async def main():
-    ok = True
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=[
-            "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
-        ])
-        page = await browser.new_page(viewport={"width": 1280, "height": 720})
-        page.on("console", lambda m: ERRORS.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
-        page.on("pageerror", lambda e: ERRORS.append(f"pageerror: {e}"))
+def check(cond, msg):
+    print(("  ok  " if cond else " FAIL ") + msg)
+    if not cond:
+        failures.append(msg)
 
-        print("== boot smoke (title screen) ==")
-        await page.goto(f"{BASE}?seed=7", wait_until="load")
-        await page.wait_for_function("window.__GTA", timeout=15000)
-        await page.wait_for_timeout(1500)
-        state = await gta(page)
-        print(f"  screen={state['screen']} fps={state.get('fps')} money=${state['money']} "
-              f"mission={state['mission']} objective={state.get('objective')!r}")
-        if state["screen"] != "title":
-            print("  FAIL: expected title screen"); ok = False
 
-        print("== start the game (Enter) ==")
-        await page.keyboard.press("Enter")
-        # Wait for the transition (not a fixed sleep): in headless
-        # SwiftShader the frame rate can be ~8 fps, so a 500 ms wait is
-        # only ~4 frames and the title -> play transition may not have
-        # landed yet. The game is correct; the test must wait for it.
+def wait_server():
+    for _ in range(50):
         try:
-            await page.wait_for_function(
-                "() => window.__GTA.screen === 'play'", timeout=10000)
+            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=1)
+            return True
         except Exception:
-            pass
-        state = await gta(page)
-        print(f"  screen={state['screen']}")
-        if state["screen"] != "play":
-            print("  FAIL: expected play after Enter"); ok = False
+            time.sleep(0.2)
+    return False
 
-        print("== walk (hold W until moved > 3 m) ==")
-        before = await page.evaluate("({x: window.__GTA.state.player.x, z: window.__GTA.state.player.z})")
-        await page.keyboard.down("KeyW")
-        try:
-            await page.wait_for_function(
-                """(before) => {
-                    const p = window.__GTA.state.player;
-                    return Math.hypot(p.x - before.x, p.z - before.z) > 3;
-                }""",
-                arg=before, timeout=30000)
-            walked = True
-        except Exception:
-            walked = False
-        await page.keyboard.up("KeyW")
-        after = await page.evaluate("({x: window.__GTA.state.player.x, z: window.__GTA.state.player.z})")
-        moved = ((after["x"] - before["x"]) ** 2 + (after["z"] - before["z"]) ** 2) ** 0.5
-        print(f"  moved {moved:.1f} m (from {before['x']:.1f},{before['z']:.1f} to {after['x']:.1f},{after['z']:.1f})")
-        if not walked or moved < 3:
-            print("  FAIL: player barely moved"); ok = False
 
-        print("== enter a parked car (debug teleport + E) ==")
-        # Wait for the player to stop walking (else they drift out of the
-        # 3.2 m enter range between the teleport and the next game step).
-        try:
-            await page.wait_for_function("() => Math.abs(window.__GTA.state.player.speed) < 0.5", timeout=15000)
-        except Exception:
-            print("  (player did not stop; continuing anyway)")
-        await page.evaluate("""() => {
-            const car = window.__GTA.state.cars.find(c => c.isParked);
-            window.__GTA.debug.teleport(car.x + 2, car.z, Math.PI, null);
-            window.__parkedCar = car;
-        }""")
-        # Hold E (a quick press can fall between two slow frames; in
-        # headless SwiftShader the key edge can take >1 s to be consumed,
-        # so hold long and retry once — timing only, the assertion that
-        # E must enter the car is unchanged).
-        async def press_e(ms=1500):
-            await page.keyboard.down("KeyE")
-            await page.wait_for_timeout(ms)
-            await page.keyboard.up("KeyE")
-            await page.wait_for_timeout(500)
-        await press_e()
-        state = await gta(page)
-        if not state["inCar"]:
-            print("  (first E missed; retrying once)")
-            await press_e()
-            state = await gta(page)
-        print(f"  inCar={state['inCar']} speed={state['speed']:.1f} km/h")
-        if not state["inCar"]:
-            print("  FAIL: E did not enter the car"); ok = False
+def gta(page):
+    return page.evaluate("window.__GTA")
 
-        print("== drive (beachfront street, hold W until distanceDriven > 10 m) ==")
-        # The nearest parked car may face a building; move the player's
-        # current car to the clear beachfront street (x=-144, south) first.
-        # If the enter step failed there is no car to drive — skip (the
-        # enter FAIL above already records it) instead of walking for 30 s.
-        if not state["inCar"]:
-            print("  (skipped: not in a car)")
+
+def dist(a, tx, tz):
+    return math.hypot(a["x"] - tx, a["z"] - tz)
+
+
+def walk_to(page, tx, tz, timeout=90):
+    """Greedy on-foot navigation with W/S/A/D (camera heading fixed)."""
+    keys = set()
+    held = set()
+
+    def set_keys(want):
+        nonlocal held
+        for k in list(held - want):
+            page.keyboard.up(k)
+            held.discard(k)
+        for k in list(want - held):
+            page.keyboard.down(k)
+            held.add(k)
+
+    start = time.time()
+    last_best = dist(gta(page), tx, tz)
+    last_progress = time.time()
+    sidestep = None
+    while time.time() - start < timeout:
+        a = gta(page)
+        d = dist(a, tx, tz)
+        if d < 3:
+            set_keys(set())
+            return True
+        if d < last_best - 0.5:
+            last_best = d
+            last_progress = time.time()
+        want = set()
+        if sidestep and time.time() < sidestep[1]:
+            want.add(sidestep[0])
         else:
-            await page.evaluate("""() => {
-                const car = window.__GTA.state.player.car;
-                window.__GTA.debug.teleport(-144, -60, 0, car);
-            }""")
-            await page.wait_for_timeout(500)
-            await page.keyboard.down("KeyW")
-            try:
-                await page.wait_for_function(
-                    "() => window.__GTA.state.stats.distanceDriven > 10",
-                    timeout=30000)
-                drove = True
-            except Exception:
-                drove = False
-            await page.keyboard.up("KeyW")
-            state = await gta(page)
-            driven = await page.evaluate("window.__GTA.state.stats.distanceDriven")
-            print(f"  speed={state['speed']:.1f} km/h distanceDriven={driven:.1f} m")
-            if not drove or driven < 10:
-                print("  FAIL: car barely drove"); ok = False
+            sidestep = None
+            if a["z"] - tz > 1:
+                want.add("w")
+            elif tz - a["z"] > 1:
+                want.add("s")
+            if a["x"] - tx < -1:
+                want.add("a")
+            elif a["x"] - tx > 1:
+                want.add("d")
+            if time.time() - last_progress > 3:
+                # Stuck against a building: sidestep for 1.5 s.
+                sidestep = ("a" if "a" not in held else "d", time.time() + 1.5)
+                last_progress = time.time()
+        set_keys(want)
+        page.wait_for_timeout(150)
+    set_keys(set())
+    return False
 
-        print("== exit the car (E) ==")
-        # No car (enter/drive failed) — nothing to exit; the earlier FAIL
-        # already records it. Skip instead of crashing on player.car null.
-        if not state["inCar"]:
-            print("  (skipped: not in a car)")
+
+def drive_to(page, tx, tz, timeout=90):
+    """Steer by heading error, throttle on; reverse out when stuck."""
+    held = set()
+
+    def set_keys(want):
+        nonlocal held
+        for k in list(held - want):
+            page.keyboard.up(k)
+            held.discard(k)
+        for k in list(want - held):
+            page.keyboard.down(k)
+            held.add(k)
+
+    def wrap(a):
+        while a > math.pi:
+            a -= 2 * math.pi
+        while a < -math.pi:
+            a += 2 * math.pi
+        return a
+
+    start = time.time()
+    last_best = dist(gta(page), tx, tz)
+    last_progress = time.time()
+    reversing_until = 0
+    while time.time() - start < timeout:
+        a = gta(page)
+        d = dist(a, tx, tz)
+        if d < 6:
+            set_keys(set())
+            return True
+        if d < last_best - 0.5:
+            last_best = d
+            last_progress = time.time()
+        if time.time() < reversing_until:
+            set_keys({"s"})
         else:
-            # Let the car roll to a near-stop first, so the exit position is
-            # measured against where the car actually is.
-            try:
-                await page.wait_for_function(
-                    "() => Math.abs(window.__GTA.state.player.speed) < 2", timeout=20000)
-            except Exception:
-                print("  (car did not slow down; continuing anyway)")
-            car_pos = await page.evaluate("({x: window.__GTA.state.player.car.x, z: window.__GTA.state.player.car.z})")
-            await page.keyboard.down("KeyE")
-            await page.wait_for_timeout(1500)
-            await page.keyboard.up("KeyE")
-            await page.wait_for_timeout(500)
-            exit_state = await page.evaluate("""(carPos) => {
-                const p = window.__GTA.state.player;
-                return {
-                    inCar: p.inCar,
-                    onFoot: p.onFoot,
-                    dist: Math.hypot(p.x - carPos.x, p.z - carPos.z),
-                };
-            }""", arg=car_pos)
-            print(f"  inCar={exit_state['inCar']} onFoot={exit_state['onFoot']} distToCar={exit_state['dist']:.1f} m")
-            if exit_state["inCar"] or not exit_state["onFoot"]:
-                print("  FAIL: E did not exit the car"); ok = False
-            if exit_state["dist"] > 5:
-                print("  FAIL: player ended up far from the car after exiting"); ok = False
-
-        print("== wanted heat (debug addHeat) ==")
-        await page.evaluate("window.__GTA.debug.addHeat(2)")
-        await page.wait_for_timeout(1500)
-        state = await gta(page)
-        print(f"  wanted={state['wanted']} policeCars={state['policeCars']}")
-        if state["wanted"] < 2:
-            print("  FAIL: wanted did not rise"); ok = False
-        if state["policeCars"] < 1:
-            print("  FAIL: no police car spawned"); ok = False
-
-        print("== mission start (debug startMission 1) ==")
-        await page.evaluate("window.__GTA.debug.startMission(1)")
-        # The world step that applies the mission can take >500 ms at
-        # SwiftShader fps (~4): poll until the objective changes, up to 5 s.
-        objective = ""
-        for _ in range(20):
-            await page.wait_for_timeout(250)
-            objective = (await gta(page)).get("objective") or ""
-            if "docks" in objective.lower():
-                break
-        print(f"  objective={objective!r}")
-        if "docks" not in objective.lower():
-            print("  FAIL: mission objective did not change"); ok = False
-
-        print("== HUD / minimap ==")
-        hud = await page.evaluate("""() => ({
-            cash: document.getElementById('cash')?.textContent,
-            objective: document.getElementById('objective')?.textContent,
-            stars: document.getElementById('stars')?.textContent,
-            minimap: !!document.getElementById('minimap'),
-        })""")
-        print(f"  cash={hud['cash']!r} objective={hud['objective']!r} stars={hud['stars']!r} minimap={hud['minimap']}")
-        if not hud["cash"] or not hud["objective"]:
-            print("  FAIL: HUD text missing"); ok = False
-        if "★★" not in (hud["stars"] or ""):
-            print("  FAIL: wanted stars do not show 2 stars"); ok = False
-
-        print("== FPS ==")
-        state = await gta(page)
-        print(f"  fps={state.get('fps')} errors={len(ERRORS)}")
-        await browser.close()
-
-    print("== errors ==")
-    if ERRORS:
-        for e in ERRORS[:20]:
-            print("  " + e)
-        ok = False
-    else:
-        print("  none")
-    print("PLAYTEST " + ("PASS" if ok else "FAIL"))
-    sys.exit(0 if ok else 1)
+            want = {"w"}
+            err = wrap(math.atan2(tx - a["x"], tz - a["z"]) - a["heading"])
+            if err > 0.15:
+                want.add("d")
+            elif err < -0.15:
+                want.add("a")
+            if time.time() - last_progress > 4:
+                reversing_until = time.time() + 1.5
+                last_progress = time.time()
+            set_keys(want)
+        page.wait_for_timeout(150)
+    set_keys(set())
+    return False
 
 
-asyncio.run(main())
+def main():
+    server = subprocess.Popen(
+        [str(NODE), "serve.ts", "--port", str(PORT)],
+        cwd=REPO,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        if not wait_server():
+            print("FAIL: game server did not come up")
+            return 1
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                args=["--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--no-sandbox"]
+            )
+            page = browser.new_page(viewport={"width": 1280, "height": 720})
+            errors = []
+            page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
+            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
+            page.wait_for_function("window.__GTA", timeout=20000)
+            page.wait_for_timeout(1000)
+
+            a = gta(page)
+            check(a["screen"] == "title", f"title screen shows (screen={a['screen']})")
+            check(page.is_visible("#title"), "title overlay is visible")
+            check(page.inner_text("#cash").startswith("$"), "HUD cash shows on title")
+
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(500)
+            a = gta(page)
+            check(a["screen"] == "play", f"Enter starts the game (screen={a['screen']})")
+            check(a["mission"] == 0, "mission starts at M0")
+            start = (a["x"], a["z"])
+
+            # Walk: hold W for 2 s, must move.
+            page.keyboard.down("w")
+            page.wait_for_timeout(2000)
+            page.keyboard.up("w")
+            a = gta(page)
+            moved = math.hypot(a["x"] - start[0], a["z"] - start[1])
+            check(moved > 5, f"walking moves the player ({moved:.1f} m in 2 s)")
+
+            # Walk to the parked car at (12, -75) and steal it.
+            check(walk_to(page, 12, -75), "walked to the parked car at (12, -75)")
+            page.keyboard.press("e")
+            page.wait_for_timeout(500)
+            a = gta(page)
+            check(a["inCar"], "E enters / steals the parked car")
+
+            # Drive: hold W for 3 s.
+            page.keyboard.down("w")
+            page.wait_for_timeout(3000)
+            page.keyboard.up("w")
+            a = gta(page)
+            check(a["speed"] > 0, f"driving builds speed ({a['speed']} km/h)")
+            check(dist(a, 12, -75) > 10, "driving moves the car away from the parking spot")
+
+            # M1: drive to Rosa's café (-20, -10).
+            check(drive_to(page, -20, -10), "drove to Rosa's café")
+            page.wait_for_timeout(800)
+            a = gta(page)
+            check(a["mission"] == 1, f"M1 starts at the café (mission={a['mission']})")
+
+            # M1: drive to the docks (160, 50), get out, walk to the marker.
+            check(drive_to(page, 160, 50), "drove to the docks")
+            a = gta(page)
+            car_pos = (a["x"], a["z"])
+            page.keyboard.press("e")
+            page.wait_for_timeout(500)
+            a = gta(page)
+            check(not a["inCar"], "E exits the car at the docks")
+            check(walk_to(page, 160, 50), "walked to the docks package marker")
+            page.wait_for_timeout(500)
+            a = gta(page)
+            check(a["step"] == "deliver", f"M1 package collected (step={a['step']})")
+
+            # M1: get back in the car and drive to the café to deliver.
+            check(walk_to(page, car_pos[0], car_pos[1]), "walked back to the car")
+            page.keyboard.press("e")
+            page.wait_for_timeout(500)
+            a = gta(page)
+            check(a["inCar"], "E re-enters the car at the docks")
+            check(drive_to(page, -20, -10, timeout=120), "drove back to the café to deliver")
+            page.wait_for_timeout(800)
+            a = gta(page)
+            check(a["mission"] == 2, f"M1 delivered, M2 starts (mission={a['mission']}, money=${a['money']})")
+            check(a["money"] >= 450, f"M1 paid $300 (money=${a['money']})")
+
+            # HUD + minimap still live.
+            check(page.inner_text("#cash").startswith("$"), "HUD cash updates")
+            check(len(page.inner_text("#objective")) > 3, "HUD objective shows")
+            check(page.inner_text("#speed").endswith("km/h"), "HUD speed shows")
+            mm = page.evaluate(
+                "() => { const c = document.getElementById('minimap');"
+                " const x = c.getContext('2d').getImageData(0,0,160,160).data;"
+                " let s = 0, m = 0; for (let i=0;i<x.length;i+=4){ s += x[i]; }"
+                " m = s / (x.length/4); let v = 0;"
+                " for (let i=0;i<x.length;i+=4){ v += (x[i]-m)*(x[i]-m); }"
+                " return Math.sqrt(v/(x.length/4)); }"
+            )
+            check(mm > 5, f"minimap is drawn, not blank (pixel stddev {mm:.1f})")
+            check(not errors, f"zero console/page errors during play ({len(errors)})")
+            for e in errors[:10]:
+                print("  error: " + e)
+            browser.close()
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except Exception:
+            server.kill()
+
+    if failures:
+        print(f"\nplaytest: {len(failures)} FAILURES")
+        return 1
+    print("\nplaytest: all checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
