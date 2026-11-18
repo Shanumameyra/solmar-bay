@@ -1,11 +1,22 @@
-// Seeded RNG (mulberry32). ALL gameplay randomness flows through createRandom
-// so a run with the same seed is fully reproducible (?seed=N fixes it).
-// No Math.random() anywhere in game code.
-// Hash a string seed (e.g. "?seed=solmar") into a uint32 for mulberry32,
-// so text seeds are reproducible too.
+// Seeded RNG (mulberry32). ALL gameplay randomness goes through this so a
+// world built from a seed is deterministic: same seed, same city, same
+// traffic, same shots. Math.random is never used by Worker A modules.
+
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function next() {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// FNV-1a string hash -> uint32 seed. Lets callers seed from a name.
 export function hashSeed(str) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i += 1) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
@@ -13,44 +24,57 @@ export function hashSeed(str) {
 }
 
 export function createRandom(seed) {
-  let state = (typeof seed === 'string' ? hashSeed(seed) : (seed >>> 0)) || 1;
-  function next() {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
+  let next = mulberry32(seed);
   return {
-    next,
-    // Re-seed in place, so a subsystem can restart its stream.
-    reset(newSeed) {
-      state = (typeof newSeed === 'string' ? hashSeed(newSeed) : (newSeed >>> 0)) || 1;
+    // Raw [0, 1).
+    next() {
+      return next();
     },
     // Float in [lo, hi).
-    range(lo, hi) { return lo + next() * (hi - lo); },
-    // Integer in [0, n); 0 when n is not positive (never a negative index).
-    int(n) { return n > 0 ? Math.floor(next() * n) : 0; },
-    // Integer in [lo, hi] inclusive.
-    intRange(lo, hi) { return lo + Math.floor(next() * (hi - lo + 1)); },
-    // Random element of an array; undefined for an empty array.
-    pick(arr) { return arr.length ? arr[Math.floor(next() * arr.length)] : undefined; },
-    // True with probability p.
-    chance(p) { return next() < p; },
-    // Fisher-Yates shuffle of a copy.
-    shuffle(arr) {
-      const out = arr.slice();
-      for (let i = out.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(next() * (i + 1));
-        const tmp = out[i]; out[i] = out[j]; out[j] = tmp;
-      }
-      return out;
+    range(lo, hi) {
+      return lo + next() * (hi - lo);
     },
-    // Approximately normal (mean 0, sd 1) via Box-Muller; clamped to ±3.
+    // Integer in [0, n). Guards against non-positive n (returns 0).
+    int(n) {
+      if (!(n > 0)) return 0;
+      return Math.floor(next() * n);
+    },
+    // Integer in [lo, hi] inclusive.
+    intRange(lo, hi) {
+      if (!(hi >= lo)) return lo;
+      return lo + Math.floor(next() * (hi - lo + 1));
+    },
+    // Random element; undefined for an empty array.
+    pick(arr) {
+      if (!arr || arr.length === 0) return undefined;
+      return arr[Math.floor(next() * arr.length)];
+    },
+    // True with probability p.
+    chance(p) {
+      return next() < p;
+    },
+    // Shuffled copy (Fisher-Yates); the input is untouched.
+    shuffle(arr) {
+      const a = arr.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(next() * (i + 1));
+        const tmp = a[i];
+        a[i] = a[j];
+        a[j] = tmp;
+      }
+      return a;
+    },
+    // Standard-normal sample (Box-Muller).
     gauss() {
-      const u1 = Math.max(1e-9, next());
-      const u2 = next();
-      const g = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-      return Math.max(-3, Math.min(3, g));
+      let u = 0;
+      let v = 0;
+      while (u === 0) u = next();
+      while (v === 0) v = next();
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    },
+    // Re-seed this generator in place (lets a world reset deterministically).
+    reset(s) {
+      next = mulberry32(s);
     },
   };
 }
