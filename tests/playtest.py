@@ -175,10 +175,16 @@ async def main():
 
         print("== mission start (debug startMission 1) ==")
         await page.evaluate("window.__GTA.debug.startMission(1)")
-        await page.wait_for_timeout(500)
-        state = await gta(page)
-        print(f"  mission={state['mission']!r}")
-        if "docks" not in state["mission"].lower() and "pickup" not in state["mission"].lower():
+        # The world step that applies the mission can take >500 ms at
+        # SwiftShader fps (~4): poll until the objective changes, up to 5 s.
+        mission = ""
+        for _ in range(20):
+            await page.wait_for_timeout(250)
+            mission = (await gta(page))["mission"]
+            if "docks" in mission.lower() or "pickup" in mission.lower():
+                break
+        print(f"  mission={mission!r}")
+        if "docks" not in mission.lower() and "pickup" not in mission.lower():
             print("  FAIL: mission objective did not change"); ok = False
 
         print("== HUD / minimap ==")

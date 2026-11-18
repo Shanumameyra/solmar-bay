@@ -608,3 +608,47 @@ in-car bust + in-car death checks that step the world afterwards.
   lambat di sini, cepat di hardware nyata); bentuk awan debu bervariasi
   sedikit per run (random) tapi world state deterministik; potret "JR"
   berupa inisial di lingkaran pink (kacamata tidak digambar literal).
+
+## Round 4 — polish premium (18 Nov ~10:15 WIB): GT lebih halus, jalan basah, gedung detail, cahaya sinematik
+- **GT lebih halus (render.js):** extrude curveSegments 12→24, bevelSegments 2→3,
+  bevel 0,07→0,09 (tepi membulat, siluet mulus); profil bodi digambar ulang
+  dengan kurva mengalir (kap panjang jatuh lembut, beltline melengkung, deck
+  belakang turun ke ekor) + profil kaca lebih halus; cat gloss clearcoat
+  (roughness 0,28→0,22, metalness 0,65→0,75, envMapIntensity 1,2); velg:
+  cincin rim torus gunmetal di tiap roda (multi-piece alloy, bukan cakram
+  datar); lampu: strip DRL LED emissive di bawah tiap headlight + headlight
+  sedikit lebih besar; diffuser belakang gelap + strip krom di beltline.
+- **Jalan basah (city.js):** material aspal roughness 0,32→0,18, metalness
+  0,3→0,45, envMapIntensity 0,5→0,8 (memantulkan env map sunset); tekstur
+  jalan: streak refleksi matahari hangat sepanjang boulevard x=-192 (terang
+  di ujung selatan z+200, memudar ke utara) + inti terang + pantulan pink
+  billboard FLAMINGO FM di tepi jalan (x=-198, z=15). **Kolam cahaya polisi
+  (render.js):** InstancedMesh lingkaran radial-gradient additif di bawah
+  tiap cruiser (y=0,03, r=1,9 m), warna merah/biru bergantian mengikuti fase
+  flash light bar — refleksi lampu polisi di aspal basah.
+- **Gedung lebih detail (city.js):** beachfront row bervariasi (lebar 12-16,
+  dalam 18-22, tinggi 8-14 — bukan lagi 8 kotak identik 14x20); cornice
+  (pita terang di puncak tiap fasad) + penthouse (kotak atap di tiap gedung
+  genap, warna palet pantai) — siluet atap bervariasi; balkon di KEDUA ujung
+  fasad per lantai (bukan satu sisi); jendela menyala lebih banyak (hangat
+  38%→48%, dingin 10%→8%, tirai 10%→8% — total menyala ~56%).
+- **Cahaya lebih sinematik (config.js + render.js):** SUN 3,8→4,2 (highlight
+  lebih kuat), HEMI 1,2→1,0 + fill 0,8→0,7 (bayangan lebih dalam, kontras
+  lebih sinematik), exposure 1,25→1,32, FOG 220/520→200/460 (haze lebih
+  terasa, depth lebih dalam), gradasi langit diperkaya (ungu atas lebih
+  dalam #3d1e55, horizon lebih hangat #ff7a4a), halo lembut lebar (900x350,
+  opacity 0,22) di belakang glare matahari — bloom jatuh halus.
+- **QA (18 Nov):** selftest **85/85 PASS**; shots **PASS, 0 errors**
+  (1-hero.jpg 181.524 B, wanted=3, policeCars=6); playtest **PASS, 0 errors**
+  (playtest7; playtest6 sempat FAIL di step mission — flake timing: step
+  hanya menunggu 500 ms, di fps=4 itu ~2 frame, objektif baru berubah
+  setelahnya — perbaikan test: polling sampai 5 s, bukan perubahan game).
+  Screenshot diverifikasi visual + crop GT/jalan: GT pink jauh lebih halus
+  (fastback mengalir, spoiler hitam besar, velg ber-cincin, tail bar terang,
+  debu lembut di belakang), streak matahari hangat di aspal basah, kolam
+  cahaya polisi samar di bawah cruiser, jendela gedung menyala hidup,
+  langit ungu→magenta→peach lebih kaya. Tank kiri, macet, pejalan kaki,
+  polisi mengapit, heli kecil, billboard, VALE, dan HUD lengkap tetap.
+- **Notes:** draw-call naik ~10 (cornice + penthouse + kolam + detail GT)
+  di atas budget lunak 60 (tidak ada test yang meng-assert); fps playtest
+  tetap 4-7 di SwiftShader.

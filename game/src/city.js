@@ -240,6 +240,28 @@ function makeGroundTexture() {
   for (const off of [-1.2, 0.8]) {
     g.fillRect(toPx(-192 + off) - 1.5, 0, 3, SIZE);
   }
+  // Wet-road reflections (painted into the texture — the street is static):
+  // a warm sun streak down the beach boulevard, brightest at the south
+  // end (toward the sun at z=+700) and fading north, so the wet asphalt
+  // carries the sunset pink/orange like the reference's wet boulevard.
+  const streak = g.createLinearGradient(0, toPx(30), 0, toPx(200));
+  streak.addColorStop(0, 'rgba(255,120,110,0)');
+  streak.addColorStop(0.55, 'rgba(255,140,90,0.18)');
+  streak.addColorStop(1, 'rgba(255,160,90,0.42)');
+  g.fillStyle = streak;
+  g.fillRect(toPx(-195.5), toPx(30), toPx(-188.5) - toPx(-195.5), toPx(200) - toPx(30));
+  // Brighter core of the streak (the sun's direct reflection).
+  const core = g.createLinearGradient(0, toPx(60), 0, toPx(200));
+  core.addColorStop(0, 'rgba(255,190,130,0)');
+  core.addColorStop(1, 'rgba(255,200,140,0.5)');
+  g.fillStyle = core;
+  g.fillRect(toPx(-193.2), toPx(60), toPx(-190.8) - toPx(-193.2), toPx(200) - toPx(60));
+  // Pink reflection of the FLAMINGO FM billboard on the wet road edge.
+  const bbGlow = g.createRadialGradient(toPx(-198), toPx(15), 0, toPx(-198), toPx(15), 12 * S);
+  bbGlow.addColorStop(0, 'rgba(255,90,168,0.30)');
+  bbGlow.addColorStop(1, 'rgba(255,90,168,0)');
+  g.fillStyle = bbGlow;
+  g.fillRect(toPx(-210), toPx(3), 24 * S, 24 * S);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
@@ -276,15 +298,15 @@ function makeWindowTexture(rows, cols, rng) {
       g.fillStyle = '#3a4552';
       g.fillRect(x - 2, y - 2, w + 4, h + 4);
       const roll = rng.next();
-      if (roll < 0.38) {
-        // Lit warm (sunset lamps).
+      if (roll < 0.48) {
+        // Lit warm (sunset lamps) — most windows glow at dusk.
         g.fillStyle = rng.next() < 0.6 ? '#ffd98a' : '#ffeec0';
         g.fillRect(x, y, w, h);
-      } else if (roll < 0.48) {
+      } else if (roll < 0.56) {
         // Lit cool.
         g.fillStyle = '#bfe0ff';
         g.fillRect(x, y, w, h);
-      } else if (roll < 0.58) {
+      } else if (roll < 0.64) {
         // Curtains.
         g.fillStyle = '#d8a0a0';
         g.fillRect(x, y, w, h);
@@ -415,10 +437,13 @@ export function buildCity(seed) {
   const lights = { positions: [], poles: null, heads: null };
 
   // ---- Ground: one textured plane + sea to the west ----
+  // Wet boulevard: low roughness + higher metalness/envMapIntensity so
+  // the asphalt reads as rain-slicked — it mirrors the pink/orange sunset
+  // env map instead of a flat matte grey (the reference's wet street).
   const groundTex = makeGroundTexture();
   const groundMat = groundTex
-    ? new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.32, metalness: 0.3, envMapIntensity: 0.5 })
-    : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.ASPHALT, roughness: 0.32, metalness: 0.3 });
+    ? new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.18, metalness: 0.45, envMapIntensity: 0.8 })
+    : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.ASPHALT, roughness: 0.18, metalness: 0.45 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -516,8 +541,10 @@ export function buildCity(seed) {
   // beachfront avenue at x = -144 — the row must NOT block the street).
   for (let z = -168; z <= 168; z += 48) {
     const h = rng.range(8, 14);
-    planned.push({ x: -162, z, w: 14, d: 20, h, band: 0, district: 'beach' });
-    colliders.push({ minX: -169, minZ: z - 10, maxX: -155, maxZ: z + 10 });
+    const w = rng.range(12, 16);
+    const d = rng.range(18, 22);
+    planned.push({ x: -162, z, w, d, h, band: 0, district: 'beach' });
+    colliders.push({ minX: -162 - w / 2, minZ: z - d / 2, maxX: -162 + w / 2, maxZ: z + d / 2 });
   }
   const dummy = new THREE.Object3D();
   const colorObj = new THREE.Color();
@@ -574,8 +601,10 @@ export function buildCity(seed) {
   beachRow.forEach((b, bi) => {
     const floors = Math.max(1, Math.floor(b.h / 4.5));
     for (let f = 1; f < floors; f += 1) {
-      const zOff = (bi % 2 === 0 ? -4.5 : 4.5);
-      balconySpots.push({ x: b.x - b.w / 2 - 0.5, y: f * 4.2 + 0.6, z: b.z + zOff });
+      // A balcony on BOTH ends of the facade per floor, not one side
+      // only — the reference facades are layered on every floor.
+      balconySpots.push({ x: b.x - b.w / 2 - 0.5, y: f * 4.2 + 0.6, z: b.z - 4.5 });
+      balconySpots.push({ x: b.x - b.w / 2 - 0.5, y: f * 4.2 + 0.6, z: b.z + 4.5 });
     }
     awningSpots.push({ x: b.x - b.w / 2 - 0.6, y: 3.4, z: b.z - 4.5, color: AWNING_COLORS[bi % AWNING_COLORS.length] });
     awningSpots.push({ x: b.x - b.w / 2 - 0.6, y: 3.4, z: b.z + 4.5, color: AWNING_COLORS[(bi + 2) % AWNING_COLORS.length] });
@@ -602,6 +631,39 @@ export function buildCity(seed) {
   balconyRail.name = 'balcony-rails';
   group.add(balconySlab);
   group.add(balconyRail);
+
+  // Cornices + rooftop penthouses on the beachfront row: a thin light
+  // band at the top of each facade (a clear roofline) and a small
+  // rooftop box on every other building, so the row's silhouette varies
+  // instead of reading as eight identical boxes.
+  const corniceMesh = new THREE.InstancedMesh(boxGeo,
+    new THREE.MeshStandardMaterial({ color: 0xf5ead8, roughness: 0.9 }), beachRow.length);
+  beachRow.forEach((b, i) => {
+    dummy.position.set(b.x, b.h - 0.15, b.z);
+    dummy.scale.set(b.w + 0.3, 0.25, b.d + 0.3);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    corniceMesh.setMatrixAt(i, dummy.matrix);
+  });
+  corniceMesh.instanceMatrix.needsUpdate = true;
+  corniceMesh.name = 'cornices';
+  group.add(corniceMesh);
+  const penthouseRow = beachRow.filter((b, bi) => bi % 2 === 0);
+  const penthouseMesh = new THREE.InstancedMesh(boxGeo,
+    new THREE.MeshStandardMaterial({ roughness: 0.9 }), Math.max(1, penthouseRow.length));
+  penthouseRow.forEach((b, i) => {
+    dummy.position.set(b.x, b.h + 1.0, b.z);
+    dummy.scale.set(b.w * 0.45, 2.0, b.d * 0.45);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    penthouseMesh.setMatrixAt(i, dummy.matrix);
+    penthouseMesh.setColorAt(i, colorObj.setHex(
+      CONFIG.PALETTE.BUILDING_BEACH[i % CONFIG.PALETTE.BUILDING_BEACH.length]));
+  });
+  penthouseMesh.instanceMatrix.needsUpdate = true;
+  if (penthouseMesh.instanceColor) penthouseMesh.instanceColor.needsUpdate = true;
+  penthouseMesh.name = 'penthouses';
+  group.add(penthouseMesh);
   const awningMesh = new THREE.InstancedMesh(boxGeo,
     new THREE.MeshStandardMaterial({ roughness: 0.85 }), Math.max(1, awningSpots.length));
   awningSpots.forEach((s, i) => {

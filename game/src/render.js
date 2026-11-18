@@ -22,11 +22,11 @@ const PAL = CONFIG.PALETTE;
 // orange band. The warm band sits at ~50-68% (the horizon on screen /
 // the sphere's equator), so the sky reads peach at eye level.
 function sunsetStops(grad) {
-  grad.addColorStop(0, '#4a2560');
-  grad.addColorStop(0.22, '#7a2f6e');
+  grad.addColorStop(0, '#3d1e55');
+  grad.addColorStop(0.22, '#7e2f70');
   grad.addColorStop(0.38, '#c95a7e');
-  grad.addColorStop(0.5, '#ff8a5c');
-  grad.addColorStop(0.68, '#ffa87a');
+  grad.addColorStop(0.5, '#ff7a4a');
+  grad.addColorStop(0.68, '#ff9a6a');
   grad.addColorStop(1, '#ffd9a8');
 }
 
@@ -121,6 +121,23 @@ function makeGlareSprite() {
   return sprite;
 }
 
+// Wide soft halo behind the glare: a faint, very wide warm wash so the
+// sun bloom falls off smoothly instead of ending in a hard edge — the
+// cinematic glow around the low sun.
+function makeHaloSprite() {
+  const tex = makeGlowTexture();
+  if (!tex) return null;
+  const mat = new THREE.SpriteMaterial({
+    map: tex, color: 0xffb060, transparent: true, opacity: 0.22,
+    blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.position.set(-190, 70, 700);
+  sprite.scale.set(900, 350, 1);
+  sprite.name = 'sun-halo';
+  return sprite;
+}
+
 // A few static clouds (fixed positions = deterministic screenshots).
 function makeClouds() {
   const tex = makeCloudTexture();
@@ -195,9 +212,9 @@ export function createRenderer(canvas) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  // Exposure 1.25: the environment map now lifts the shadows, so a touch
-  // less exposure keeps the highlights from blowing out (was 1.3).
-  renderer.toneMappingExposure = 1.25;
+  // Exposure 1.32: the deeper shadows (HEMI 1.0) need a touch more
+  // exposure so the highlights stay rich without the mid-tones going muddy.
+  renderer.toneMappingExposure = 1.32;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
@@ -233,7 +250,9 @@ export function createRenderer(canvas) {
   // Warm fill from the north-west (no shadow): lifts the camera-facing
   // facades + the GT's rear, which the low southern sun leaves in shade,
   // so the pastel buildings read bright like the reference instead of dark.
-  const fill = new THREE.DirectionalLight(0xffc0a8, 0.8);
+  // 0.7 (was 0.8): a dimmer fill deepens the shadows for a more cinematic
+  // contrast — the lighter window texture now carries the facades.
+  const fill = new THREE.DirectionalLight(0xffc0a8, 0.7);
   fill.position.set(-150, 150, -200);
   scene.add(fill);
   sun.shadow.mapSize.set(CONFIG.RENDER.SHADOW_MAP, CONFIG.RENDER.SHADOW_MAP);
@@ -253,6 +272,8 @@ export function createRenderer(canvas) {
   if (sunSprite) scene.add(sunSprite);
   const glareSprite = makeGlareSprite();
   if (glareSprite) scene.add(glareSprite);
+  const haloSprite = makeHaloSprite();
+  if (haloSprite) scene.add(haloSprite);
   for (const cloud of makeClouds()) scene.add(cloud);
 
   // ---- Reused scratch objects (no per-frame allocation) ----
@@ -291,6 +312,16 @@ export function createRenderer(canvas) {
     new THREE.MeshStandardMaterial({ color: 0xff2d2d, emissive: 0xff1a1a, emissiveIntensity: 1.6, roughness: 0.3 }), MAX_CARS * 2);
   const carBars = new THREE.InstancedMesh(boxGeo,
     new THREE.MeshStandardMaterial({ roughness: 0.4, emissive: 0x000000 }), MAX_CARS * 2);
+  // Police light pools: soft additive glows on the wet asphalt under
+  // each cruiser, flashing red/blue with the light bars — the wet-road
+  // reflection of the police lights.
+  const poolGeo = new THREE.CircleGeometry(1, 20);
+  poolGeo.rotateX(-Math.PI / 2); // lie flat on the road
+  const poolTex = makeGlowTexture();
+  const carPools = new THREE.InstancedMesh(poolGeo,
+    new THREE.MeshBasicMaterial({ map: poolTex, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.5 }), MAX_CARS);
+  carPools.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   carBody.castShadow = true;
   carCabin.castShadow = true;
   carBody.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -304,6 +335,7 @@ export function createRenderer(canvas) {
   scene.add(carCabin);
   scene.add(carWheels);
   scene.add(carBars);
+  scene.add(carPools);
   scene.add(carHead);
   scene.add(carTail);
   scene.add(carHub);
@@ -317,8 +349,8 @@ export function createRenderer(canvas) {
   const gtGroup = new THREE.Group();
   function extrudeCarProfile(buildShape, width) {
     const geo = new THREE.ExtrudeGeometry(buildShape(), {
-      depth: width, bevelEnabled: true, bevelThickness: 0.07, bevelSize: 0.07,
-      bevelSegments: 2, steps: 1,
+      depth: width, bevelEnabled: true, bevelThickness: 0.09, bevelSize: 0.09,
+      bevelSegments: 3, steps: 1, curveSegments: 24,
     });
     geo.rotateY(-Math.PI / 2); // shape X (length) -> local Z (front +Z)
     geo.computeBoundingBox();
@@ -329,24 +361,27 @@ export function createRenderer(canvas) {
   const gtBodyGeo = extrudeCarProfile(() => {
     const s = new THREE.Shape();
     s.moveTo(2.05, 0.18);
-    s.quadraticCurveTo(2.15, 0.42, 1.95, 0.55); // nose
-    s.quadraticCurveTo(1.4, 0.66, 0.85, 0.70);  // long hood
-    s.lineTo(-1.85, 0.68);                       // beltline / rear deck
-    s.quadraticCurveTo(-2.08, 0.60, -2.05, 0.30); // tail
+    s.quadraticCurveTo(2.18, 0.38, 2.02, 0.52); // nose, rounder
+    s.quadraticCurveTo(1.55, 0.64, 1.0, 0.68);  // long hood, gentle fall
+    s.quadraticCurveTo(0.2, 0.72, -0.6, 0.70);  // beltline, slight arch
+    s.quadraticCurveTo(-1.4, 0.68, -1.85, 0.62); // rear deck, falling to tail
+    s.quadraticCurveTo(-2.08, 0.56, -2.05, 0.30); // tail
     s.lineTo(2.05, 0.18);                        // underbody
     return s;
   }, 1.7);
   const gtGlassGeo = extrudeCarProfile(() => {
     const s = new THREE.Shape();
     s.moveTo(0.85, 0.68);                          // windshield base
-    s.quadraticCurveTo(0.55, 0.95, 0.15, 1.02);   // windshield
-    s.quadraticCurveTo(-0.4, 1.05, -0.85, 0.96);  // flowing roof
-    s.quadraticCurveTo(-1.5, 0.82, -1.90, 0.66);  // fastback
+    s.quadraticCurveTo(0.62, 0.92, 0.28, 1.00);   // windshield
+    s.quadraticCurveTo(-0.15, 1.06, -0.60, 1.00); // roof, flowing
+    s.quadraticCurveTo(-1.15, 0.90, -1.55, 0.76); // fastback
+    s.quadraticCurveTo(-1.85, 0.68, -1.90, 0.66); // tail
     s.lineTo(0.85, 0.68);                          // beltline
     return s;
   }, 1.5);
   const gtPaint = new THREE.MeshStandardMaterial({
-    color: CONFIG.CAR_MODELS.sports.color, roughness: 0.28, metalness: 0.65,
+    color: CONFIG.CAR_MODELS.sports.color, roughness: 0.22, metalness: 0.75,
+    envMapIntensity: 1.2,
   });
   const gtBodyMesh = new THREE.Mesh(gtBodyGeo, gtPaint);
   gtBodyMesh.castShadow = true;
@@ -361,6 +396,8 @@ export function createRenderer(canvas) {
   gtHubGeo.rotateZ(Math.PI / 2);
   const gtTireMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.95 });
   const gtHubMat = new THREE.MeshStandardMaterial({ color: 0x1a1c20, roughness: 0.3, metalness: 0.85 });
+  const gtRimGeo = new THREE.TorusGeometry(0.20, 0.035, 10, 24);
+  const gtRimMat = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.25, metalness: 0.9 });
   for (const [wx, wz] of [[-0.83, 1.35], [0.83, 1.35], [-0.83, -1.35], [0.83, -1.35]]) {
     const tire = new THREE.Mesh(gtTireGeo, gtTireMat);
     tire.position.set(wx, 0.34, wz);
@@ -369,15 +406,31 @@ export function createRenderer(canvas) {
     hub.position.set(wx, 0.34, wz);
     gtGroup.add(tire);
     gtGroup.add(hub);
+    // Rim ring: a gunmetal torus on the hub's outer face, so the wheel
+    // reads as a multi-piece alloy rim, not a flat dark disc.
+    const rim = new THREE.Mesh(gtRimGeo, gtRimMat);
+    rim.rotation.y = Math.PI / 2;
+    rim.position.set(wx + Math.sign(wx) * 0.13, 0.34, wz);
+    gtGroup.add(rim);
   }
   // Oval headlights (warm white, emissive) + full-width LED tail bar.
   const gtLightGeo = new THREE.SphereGeometry(0.5, 10, 6);
   const gtHeadMat = new THREE.MeshStandardMaterial({ color: 0xfff2cc, emissive: 0xffe9b0, emissiveIntensity: 1.4, roughness: 0.3 });
   for (const side of [-1, 1]) {
     const hl = new THREE.Mesh(gtLightGeo, gtHeadMat);
-    hl.scale.set(0.32, 0.16, 0.12);
+    hl.scale.set(0.36, 0.15, 0.12);
     hl.position.set(0.58 * side, 0.52, 2.02);
     gtGroup.add(hl);
+  }
+  // LED daytime-running strips under the headlights — a thin emissive
+  // line that makes the front read as a modern GT, not two bare bulbs.
+  const gtDrlGeo = new THREE.CapsuleGeometry(0.025, 0.5, 3, 8);
+  gtDrlGeo.rotateZ(Math.PI / 2); // capsule axis -> X (across the nose)
+  const gtDrlMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff6d8, emissiveIntensity: 2.0, roughness: 0.3 });
+  for (const side of [-1, 1]) {
+    const drl = new THREE.Mesh(gtDrlGeo, gtDrlMat);
+    drl.position.set(0.58 * side, 0.44, 2.04);
+    gtGroup.add(drl);
   }
   const gtTailGeo = new THREE.CapsuleGeometry(0.06, 1.4, 3, 8);
   gtTailGeo.rotateZ(Math.PI / 2); // capsule axis -> X (across the tail)
@@ -433,6 +486,21 @@ export function createRenderer(canvas) {
   gtSplitter.scale.set(1.6, 0.07, 0.3);
   gtSplitter.position.set(0, 0.16, 2.02);
   gtGroup.add(gtSplitter);
+  // Rear diffuser (dark panel under the tail) + chrome window strips
+  // along the beltline — the details that keep the flanks from reading
+  // flat at hero distance.
+  const gtDiffuser = new THREE.Mesh(boxGeo,
+    new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.6, metalness: 0.4 }));
+  gtDiffuser.scale.set(1.5, 0.08, 0.35);
+  gtDiffuser.position.set(0, 0.18, -2.0);
+  gtGroup.add(gtDiffuser);
+  const gtChromeMat = new THREE.MeshStandardMaterial({ color: 0xd8dce0, roughness: 0.15, metalness: 1.0 });
+  for (const side of [-1, 1]) {
+    const strip = new THREE.Mesh(boxGeo, gtChromeMat);
+    strip.scale.set(0.02, 0.03, 2.6);
+    strip.position.set(0.86 * side, 0.70, -0.2);
+    gtGroup.add(strip);
+  }
   gtGroup.visible = false;
   gtGroup.name = 'vespera-gt';
   scene.add(gtGroup);
@@ -656,6 +724,7 @@ export function createRenderer(canvas) {
     const n = Math.min(cars.length, MAX_CARS);
     let ci = 0; // instance index (a tank in the list must not shift it)
     let barIdx = 0;
+    let poolIdx = 0;
     let headIdx = 0;
     let tailIdx = 0;
     let hubIdx = 0;
@@ -722,6 +791,11 @@ export function createRenderer(canvas) {
         setInstance(carBars, barIdx, bx + rx * 0.35, 1.42, bz + rz * 0.35, yaw, 0.5, 0.22, 0.3);
         carBars.setColorAt(barIdx, tmpColor.setHex(flash ? 0x222244 : 0x2d7dff));
         barIdx += 1;
+        // Wet-road reflection: a soft red/blue pool under the cruiser,
+        // flashing with the bars.
+        setInstance(carPools, poolIdx, car.x, 0.03, car.z, yaw, 1.9, 1, 1.9);
+        carPools.setColorAt(poolIdx, tmpColor.setHex(flash ? 0xff2d4a : 0x2d7dff));
+        poolIdx += 1;
       }
       ci += 1;
     }
@@ -729,6 +803,7 @@ export function createRenderer(canvas) {
     carCabin.count = ci;
     carWheels.count = ci * 4;
     carBars.count = barIdx;
+    carPools.count = poolIdx;
     carHead.count = headIdx;
     carTail.count = tailIdx;
     carHub.count = hubIdx;
@@ -736,11 +811,13 @@ export function createRenderer(canvas) {
     carCabin.instanceMatrix.needsUpdate = true;
     carWheels.instanceMatrix.needsUpdate = true;
     carBars.instanceMatrix.needsUpdate = true;
+    carPools.instanceMatrix.needsUpdate = true;
     carHead.instanceMatrix.needsUpdate = true;
     carTail.instanceMatrix.needsUpdate = true;
     carHub.instanceMatrix.needsUpdate = true;
     if (carBody.instanceColor) carBody.instanceColor.needsUpdate = true;
     if (carBars.instanceColor) carBars.instanceColor.needsUpdate = true;
+    if (carPools.instanceColor) carPools.instanceColor.needsUpdate = true;
   }
 
   function syncPeds(state) {
