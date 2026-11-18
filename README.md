@@ -1,8 +1,8 @@
 # Solmar Bay — Make GTA 6
 
-[![make.fun](https://make.fun/badge/bounty/gta6-01)](https://make.fun/bounty/gta6-01)
-[![make.fun](https://make.fun/badge/entry/gta6-01)](https://make.fun/bounty/gta6-01)
-[![make.fun](https://make.fun/badge/game/gta6-01)](https://make.fun/bounty/gta6-01)
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/Shanumameyra/solmar-bay/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
 An open-world crime game in the browser, built for the make.fun **gta6-01 "Make GTA 6"** bounty. You are Dario "D" Cruz, a driver for hire in Solmar Bay — a 400×400 m coastal city at golden hour, 17:40. Run jobs for Mama Rosa, steal cars, dodge the SBPD, and build your cash.
 
