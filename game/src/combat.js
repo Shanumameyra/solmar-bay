@@ -1,234 +1,325 @@
-// Combat — fists, pistol, reload, ammo shop, healing. No gore:
-// hits stagger, push back, and raise wanted stars.
-import { addHeat } from './police.js';
+// combat.js — Solmar Bay combat: fists, pistol, health, medkits, gun shop.
+// Per DESIGN.md:
+//   Fists: punch (F), range 2 m, 15 dmg, 0.4 s cooldown, knocks peds back.
+//   Pistol: 12-round mag, R reload (1.2 s), 25 dmg, falloff beyond 30 m,
+//           muzzle flash + noise; ammo pickups at the gun shop
+//           (buy 12 for $50 - simple shop marker).
+//   Police HP 100 (3-4 pistol hits). Player HP 100; medkits at the cafe +
+//   hospital (walk over to heal +50). Death (HP 0) -> "WASTED" screen ->
+//   respawn at hospital, lose $100. Non-gory: stagger + stars, no blood.
+//
+// Targets come from G.getPeds() (traffic module, duck-typed) and
+// G.police.footCops / G.police.cars. The module never assumes the shape
+// of a pedestrian beyond { pos:{x,z}, hp?, alive?, flee?(), stagger?() }.
 
-export function createCombat() {
-  return {
-    weapon: 'fists',
-    ammo: 0,
-    mag: 12,
-    cooldown: 0,
-    reloadT: 0,
-    reloading: false,
-  };
-}
+export const PUNCH_RANGE = 2;
+export const PUNCH_DAMAGE = 15;
+export const PUNCH_COOLDOWN = 0.4;
+export const PISTOL_MAG = 12;
+export const PISTOL_DAMAGE = 25;
+export const PISTOL_RANGE = 60;
+export const PISTOL_FALLOFF = 30;
+export const RELOAD_TIME = 1.2;
+export const AMMO_PRICE = 50;
+export const AMMO_PACK = 12;
+export const MEDKIT_HEAL = 50;
+export const DEATH_FINE = 100;
 
-function playerPos(S) {
-  const p = S.player || {};
-  if (p.pos) return { x: p.pos.x, z: p.pos.z };
-  if (p.position) return { x: p.position.x, z: p.position.z };
-  return { x: p.x || 0, z: p.z || 0 };
-}
+export function createCombat(G) {
+  let punchCooldown = 0;
+  let reloading = 0; // seconds left, 0 = not reloading
+  let medkitCooldown = 0;
+  let shopCooldown = 0;
+  let shootCooldown = 0;
 
-function playerHeading(S) {
-  const p = S.player || {};
-  return p.heading ?? p.h ?? p.angle ?? 0;
-}
-
-function playerHp(S) {
-  return typeof S.player?.hp === 'number' ? S.player.hp : 100;
-}
-
-function setPlayerHp(S, hp) {
-  if (S.player) S.player.hp = Math.max(0, Math.min(100, hp));
-}
-
-// Everyone who can be hit: pedestrians plus live cops. Peds carry no hp
-// field of their own (traffic.js), so an absent hp means a full 100.
-function targets(S) {
-  const out = [];
-  for (const ped of S.peds || []) {
-    if ((ped.hp ?? 100) > 0) out.push({ kind: 'ped', ref: ped, x: ped.x ?? ped.pos?.x ?? 0, z: ped.z ?? ped.pos?.z ?? 0 });
-  }
-  for (const cop of S.police?.cops || []) {
-    if (!cop.disabled) {
-      out.push({ kind: 'cop', ref: cop, x: cop.x ?? cop.car?.x ?? 0, z: cop.z ?? cop.car?.z ?? 0 });
+  function playerPos() {
+    if (G && typeof G.getPlayerPos === 'function') {
+      const p = G.getPlayerPos();
+      if (p) return p;
     }
+    if (G && G.player && G.player.pos) return G.player.pos;
+    return { x: 0, y: 0, z: 0 };
   }
-  return out;
-}
 
-function nearestInFront(S, maxDist, maxAngle) {
-  const pp = playerPos(S);
-  const h = playerHeading(S);
-  const fx = Math.sin(h);
-  const fz = Math.cos(h);
-  let best = null;
-  let bestD = Infinity;
-  for (const t of targets(S)) {
-    const dx = t.x - pp.x;
-    const dz = t.z - pp.z;
-    const d = Math.hypot(dx, dz);
-    if (d > maxDist || d < 0.01) continue;
-    const dot = (dx / d) * fx + (dz / d) * fz;
-    const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
-    if (angle > maxAngle) continue;
-    if (d < bestD) { bestD = d; best = { ...t, dist: d, dx, dz }; }
+  function playerHeading() {
+    if (G && G.player && typeof G.player.heading === 'number') return G.player.heading;
+    return 0;
   }
-  return best;
-}
 
-function hurtTarget(S, t, damage) {
-  const ref = t.ref;
-  if (t.kind === 'ped') {
-    ref.hp = (ref.hp ?? 100) - damage;
-    // Knock back and make them flee.
-    const d = Math.max(0.01, t.dist);
-    ref.x = (ref.x ?? 0) + (t.dx / d) * 2;
-    ref.z = (ref.z ?? 0) + (t.dz / d) * 2;
-    ref.fleeing = true;
-    ref.fleeT = 3;
-    if (ref.hp <= 0) {
-      ref.hp = 0;
-      ref.down = true;
+  function peds() {
+    if (G && typeof G.getPeds === 'function') {
+      try {
+        const list = G.getPeds();
+        if (Array.isArray(list)) return list;
+      } catch (_err) { /* ignore */ }
     }
-  } else {
-    ref.hp = (ref.hp ?? 100) - damage;
-    if (ref.car) ref.car.hp = ref.hp;
-    if (ref.hp <= 0) {
-      ref.hp = 0;
-      ref.disabled = true;
-      ref.speed = 0;
-      if (ref.mesh) ref.mesh.visible = true;
-      try { addHeat(S, 2); } catch (e) { /* police optional in shots */ }
-      if (S.messages) S.messages.push({ text: 'Cop disabled! +★★', t: S.time || 0 });
-      if (S.effects && typeof S.effects.spawnSmoke === 'function') {
-        try { S.effects.spawnSmoke(S, { x: t.x, y: 1, z: t.z }); } catch (e) { /* ignore */ }
+    if (G && Array.isArray(G.peds)) return G.peds;
+    if (G && G.traffic && Array.isArray(G.traffic.peds)) return G.traffic.peds;
+    return [];
+  }
+
+  function toast(msg, kind) {
+    if (G && G.hud && typeof G.hud.toast === 'function') G.hud.toast(msg, kind || 'info');
+  }
+
+  function damageTo(target, amount) {
+    if (!target || target.alive === false) return false;
+    if (typeof target.hp === 'number') {
+      target.hp -= amount;
+      if (typeof target.stagger === 'function') {
+        try {
+          target.stagger();
+        } catch (_err) { /* ignore */ }
+      }
+      if (target.hp <= 0) {
+        target.alive = false;
+        if (typeof target.die === 'function') {
+          try {
+            target.die();
+          } catch (_err) { /* ignore */ }
+        }
+      }
+      return true;
+    }
+    // Target without HP (e.g. a plain marker): count as hit, no kill.
+    if (typeof target.stagger === 'function') {
+      try {
+        target.stagger();
+      } catch (_err) { /* ignore */ }
+    }
+    return true;
+  }
+
+  // Nearest damageable target in front of the player within range and a
+  // ~35-degree aim cone. Police foot cops count; police cars do not
+  // (shooting a car is a noise/heat event, not a kill).
+  function findAimTarget(maxRange) {
+    const p = playerPos();
+    const heading = playerHeading();
+    const fx = Math.sin(heading);
+    const fz = Math.cos(heading);
+    let best = null;
+    let bestScore = Infinity;
+    const consider = (t, px, pz) => {
+      if (!t || t.alive === false) return;
+      const dx = px - p.x;
+      const dz = pz - p.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d > maxRange || d < 0.01) return;
+      const dot = (dx * fx + dz * fz) / d;
+      if (dot < 0.82) return; // ~35 deg cone
+      const score = d + (1 - dot) * 10;
+      if (score < bestScore) {
+        bestScore = score;
+        best = { target: t, dist: d };
+      }
+    };
+    for (const ped of peds()) {
+      if (ped && ped.pos) consider(ped, ped.pos.x, ped.pos.z);
+    }
+    if (G && G.police && Array.isArray(G.police.footCops)) {
+      for (const cop of G.police.footCops) {
+        if (cop && cop.pos) consider(cop, cop.pos.x, cop.pos.z);
       }
     }
+    return best;
   }
-}
 
-export function punch(S) {
-  const c = S.combat;
-  if (!c || c.cooldown > 0 || c.reloadT > 0) return;
-  c.cooldown = 0.4;
-  const t = nearestInFront(S, 2, 1.1);
-  if (S.audio && typeof S.audio.sfx === 'function') {
-    try { S.audio.sfx(S, 'punch'); } catch (e) { /* ignore */ }
-  }
-  if (!t) return;
-  hurtTarget(S, t, 15);
-  if (t.kind === 'ped') {
-    try { addHeat(S, 1); } catch (e) { /* ignore */ }
-  }
-}
-
-export function shoot(S) {
-  const c = S.combat;
-  if (!c || c.weapon !== 'pistol') return;
-  if (c.cooldown > 0 || c.reloadT > 0) return;
-  if (c.ammo <= 0) {
-    if (S.audio && typeof S.audio.sfx === 'function') {
-      try { S.audio.sfx(S, 'click'); } catch (e) { /* ignore */ }
+  function nearestPed(maxRange) {
+    const p = playerPos();
+    let best = null;
+    let bestD = maxRange;
+    for (const ped of peds()) {
+      if (!ped || !ped.pos || ped.alive === false) continue;
+      const dx = ped.pos.x - p.x;
+      const dz = ped.pos.z - p.z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      if (d < bestD) {
+        bestD = d;
+        best = { target: ped, dist: d };
+      }
     }
-    if (S.messages) S.messages.push({ text: 'Out of ammo — press R to reload', t: S.time || 0 });
-    return;
+    return best;
   }
-  c.cooldown = 0.25;
-  c.ammo -= 1;
-  const pp = playerPos(S);
-  const h = playerHeading(S);
-  const muzzle = { x: pp.x + Math.sin(h) * 1.2, y: 1.3, z: pp.z + Math.cos(h) * 1.2 };
-  const dir = { x: Math.sin(h), y: 0, z: Math.cos(h) };
-  if (S.effects && typeof S.effects.muzzleFlash === 'function') {
-    try { S.effects.muzzleFlash(S, muzzle, dir); } catch (e) { /* ignore */ }
-  }
-  if (S.audio && typeof S.audio.sfx === 'function') {
-    try { S.audio.sfx(S, 'gunshot'); } catch (e) { /* ignore */ }
-  }
-  const t = nearestInFront(S, 45, 0.35);
-  if (t) {
-    const damage = t.dist <= 30 ? 25 : 12; // falloff beyond 30 m
-    hurtTarget(S, t, damage);
-    if (S.effects && typeof S.effects.spawnSparks === 'function') {
-      try { S.effects.spawnSparks(S, { x: t.x, y: 1.2, z: t.z }); } catch (e) { /* ignore */ }
-    }
-  }
-  // Noise draws the law if a cop is close.
-  if (S.police) {
-    let near = false;
-    for (const cop of S.police.cops || []) {
-      if (cop.disabled) continue;
-      const d = Math.hypot((cop.x ?? 0) - pp.x, (cop.z ?? 0) - pp.z);
-      if (d < 40) { near = true; break; }
-    }
-    if (near) {
-      try { addHeat(S, 1); } catch (e) { /* ignore */ }
-    }
-  }
-}
 
-export function reload(S) {
-  const c = S.combat;
-  if (!c || c.weapon !== 'pistol') return;
-  if (c.reloading || c.ammo >= c.mag) return;
-  c.reloading = true;
-  c.reloadT = 1.2;
-}
+  const api = {
+    get reloading() {
+      return reloading > 0;
+    },
+    get punchReady() {
+      return punchCooldown <= 0;
+    },
 
-export function switchWeapon(S, w) {
-  const c = S.combat;
-  if (!c) return;
-  if (w !== 'fists' && w !== 'pistol') return;
-  c.weapon = w;
-  c.reloadT = 0;
-  c.reloading = false;
-  if (w === 'pistol' && c.ammo <= 0) {
-    // First time arming the pistol, grant a starter mag if the player owns none.
-    if (!c.everArmed) { c.ammo = c.mag; c.everArmed = true; }
-  }
-}
+    // --- weapons ---
+    switchWeapon(slot) {
+      if (!G) return;
+      if (slot === 1) {
+        G.weapon = 'fists';
+      } else if (slot === 2) {
+        G.weapon = 'pistol';
+      }
+      if (G.hud && typeof G.hud.setWeapon === 'function') G.hud.setWeapon(G.weapon);
+    },
 
-export function buyAmmo(S) {
-  const c = S.combat;
-  if (!c) return false;
-  const shop = S.missions?.landmarks?.gunshop || { x: 60, z: -40 };
-  const pp = playerPos(S);
-  if (Math.hypot(pp.x - shop.x, pp.z - shop.z) > 8) {
-    if (S.messages) S.messages.push({ text: 'Ammo is sold at the gun shop', t: S.time || 0 });
-    return false;
-  }
-  const p = S.player || {};
-  if ((p.money ?? S.money ?? 0) < 50) {
-    if (S.messages) S.messages.push({ text: 'Not enough cash for ammo ($50)', t: S.time || 0 });
-    return false;
-  }
-  if (typeof p.money === 'number') p.money -= 50;
-  else if (typeof S.money === 'number') S.money -= 50;
-  c.ammo = c.mag;
-  if (S.audio && typeof S.audio.sfx === 'function') {
-    try { S.audio.sfx(S, 'pickup'); } catch (e) { /* ignore */ }
-  }
-  if (S.messages) S.messages.push({ text: 'Bought 12 rounds — $50', t: S.time || 0 });
-  return true;
-}
+    punch() {
+      if (!G || punchCooldown > 0 || (G.state !== 'playing' && G.state !== undefined)) return false;
+      punchCooldown = PUNCH_COOLDOWN;
+      const hit = nearestPed(PUNCH_RANGE + 0.5);
+      if (G.audio) G.audio.sfx('punch');
+      if (hit) {
+        damageTo(hit.target, PUNCH_DAMAGE);
+        // Knock the ped back away from the player.
+        const p = playerPos();
+        const dx = hit.target.pos.x - p.x;
+        const dz = hit.target.pos.z - p.z;
+        const d = Math.max(0.1, Math.sqrt(dx * dx + dz * dz));
+        if (typeof hit.target.knockback === 'function') {
+          try {
+            hit.target.knockback((dx / d) * 4, (dz / d) * 4);
+          } catch (_err) { /* ignore */ }
+        } else if (typeof hit.target.flee === 'function') {
+          try {
+            hit.target.flee();
+          } catch (_err) { /* ignore */ }
+        }
+        if (G.effects) G.effects.hitPuff(hit.target.pos.x, 1.2, hit.target.pos.z);
+        return true;
+      }
+      return false;
+    },
 
-export function healPlayer(S) {
-  const cafe = S.missions?.landmarks?.cafe || { x: 0, z: 0 };
-  const hospital = S.missions?.landmarks?.hospital || { x: 100, z: 90 };
-  const pp = playerPos(S);
-  const nearCafe = Math.hypot(pp.x - cafe.x, pp.z - cafe.z) < 8;
-  const nearHospital = Math.hypot(pp.x - hospital.x, pp.z - hospital.z) < 8;
-  if (!nearCafe && !nearHospital) return false;
-  if (playerHp(S) >= 100) return false;
-  setPlayerHp(S, playerHp(S) + 50);
-  if (S.messages) S.messages.push({ text: 'Patched up +50 HP', t: S.time || 0 });
-  return true;
-}
+    shoot() {
+      if (!G || reloading > 0 || shootCooldown > 0) return false;
+      if (G.weapon !== 'pistol') return false;
+      if ((G.ammo || 0) <= 0) {
+        if (G.audio) G.audio.sfx('click');
+        toast('Out of ammo — press R to reload', 'info');
+        api.reload();
+        return false;
+      }
+      shootCooldown = 0.18; // fire rate
+      G.ammo -= 1;
+      const p = playerPos();
+      const heading = playerHeading();
+      const fx = Math.sin(heading);
+      const fz = Math.cos(heading);
+      if (G.effects) {
+        G.effects.muzzle(p.x + fx * 1.2, 1.35, p.z + fz * 1.2, fx, fz);
+      }
+      if (G.audio) G.audio.sfx('gunshot');
+      const hit = findAimTarget(PISTOL_RANGE);
+      if (hit) {
+        const falloff = hit.dist > PISTOL_FALLOFF
+          ? Math.max(0.4, 1 - (hit.dist - PISTOL_FALLOFF) / PISTOL_RANGE)
+          : 1;
+        damageTo(hit.target, Math.round(PISTOL_DAMAGE * falloff));
+        if (G.effects) G.effects.hitPuff(hit.target.pos.x, 1.2, hit.target.pos.z);
+      }
+      // Noise: shooting near police raises heat.
+      if (G.police) {
+        const near = G.police.nearestDist ? G.police.nearestDist() : Infinity;
+        if (near < 45) G.police.addHeat(1, 'gunshot');
+      }
+      return true;
+    },
 
-// Cooldown / reload tick, called from the main loop.
-export function updateCombat(S, dt) {
-  const c = S.combat;
-  if (!c) return;
-  if (c.cooldown > 0) c.cooldown = Math.max(0, c.cooldown - dt);
-  if (c.reloadT > 0) {
-    c.reloadT -= dt;
-    if (c.reloadT <= 0) {
-      c.reloadT = 0;
-      c.reloading = false;
-      c.ammo = c.mag;
-      if (S.messages) S.messages.push({ text: 'Reloaded', t: S.time || 0 });
-    }
-  }
+    reload() {
+      if (!G || reloading > 0) return false;
+      if ((G.ammo || 0) >= PISTOL_MAG) return false;
+      if ((G.reserveAmmo || 0) <= 0) {
+        toast('No reserve ammo — buy more at the gun shop ($50)', 'info');
+        return false;
+      }
+      reloading = RELOAD_TIME;
+      if (G.audio) G.audio.sfx('reload');
+      return true;
+    },
+
+    // Buy 12 rounds for $50 at the gun shop marker (walk into it).
+    buyAmmo() {
+      if (!G) return false;
+      if ((G.money || 0) < AMMO_PRICE) {
+        toast('Not enough cash for ammo ($50)', 'info');
+        return false;
+      }
+      G.money -= AMMO_PRICE;
+      G.reserveAmmo = (G.reserveAmmo || 0) + AMMO_PACK;
+      toast(`Bought ${AMMO_PACK} rounds — $${AMMO_PRICE}`, 'shop');
+      if (G.audio) G.audio.sfx('cash');
+      if (G.save) G.save.save();
+      return true;
+    },
+
+    // --- health ---
+    damagePlayer(amount, source) {
+      if (!G || (G.state !== 'playing' && G.state !== undefined)) return 0;
+      if (amount <= 0) return G.health || 0;
+      G.health = Math.max(0, (G.health || 0) - amount);
+      if (G.effects) G.effects.shake(0.25);
+      if (G.health <= 0 && typeof G.wasted === 'function') {
+        G.wasted(source || 'damage');
+      }
+      return G.health;
+    },
+
+    heal(amount) {
+      if (!G) return 0;
+      G.health = Math.min(100, (G.health || 0) + (amount || 0));
+      return G.health;
+    },
+
+    // --- per-frame ---
+    update(dt) {
+      const step = Math.min(dt || 0.016, 0.05);
+      punchCooldown = Math.max(0, punchCooldown - step);
+      shootCooldown = Math.max(0, shootCooldown - step);
+      medkitCooldown = Math.max(0, medkitCooldown - step);
+      shopCooldown = Math.max(0, shopCooldown - step);
+      if (reloading > 0) {
+        reloading -= step;
+        if (reloading <= 0) {
+          reloading = 0;
+          if (G) {
+            const need = PISTOL_MAG - (G.ammo || 0);
+            const take = Math.min(need, G.reserveAmmo || 0);
+            G.ammo = (G.ammo || 0) + take;
+            G.reserveAmmo = (G.reserveAmmo || 0) - take;
+          }
+        }
+      }
+      if (!G || G.state !== 'playing') return;
+
+      // Medkits at the cafe + hospital: walk over to heal +50.
+      if (medkitCooldown <= 0 && (G.health || 0) < 100 && G.layout) {
+        const p = playerPos();
+        const spots = [G.layout.cafe, G.layout.hospital].filter(Boolean);
+        for (const s of spots) {
+          const dx = p.x - s.x;
+          const dz = p.z - s.z;
+          if (Math.sqrt(dx * dx + dz * dz) <= 4) {
+            medkitCooldown = 5;
+            api.heal(MEDKIT_HEAL);
+            toast(`Medkit +${MEDKIT_HEAL} HP`, 'heal');
+            if (G.audio) G.audio.sfx('heal');
+            if (G.effects) G.effects.healPuff(p.x, 1.2, p.z);
+            break;
+          }
+        }
+      }
+
+      // Gun shop: walk into the marker to buy ammo (with cooldown).
+      if (shopCooldown <= 0 && G.layout && G.layout.gunshop) {
+        const p = playerPos();
+        const s = G.layout.gunshop;
+        const dx = p.x - s.x;
+        const dz = p.z - s.z;
+        if (Math.sqrt(dx * dx + dz * dz) <= 4) {
+          shopCooldown = 3;
+          api.buyAmmo();
+        }
+      }
+    },
+  };
+
+  return api;
 }

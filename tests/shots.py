@@ -1,133 +1,212 @@
-#!/usr/bin/env python3
-"""Render the Solmar Bay screenshots headlessly and check them.
+"""shots.py — Solmar Bay screenshot generator (v5).
 
-- 1-hero.jpg: the entrant-supplied key art, resized to 1280x720 only.
-- 2-title / 3-onfoot / 4-mission: rendered from the game in headless
-  Chromium (shots.json queries), waiting for window.__shotReady.
-- Every screenshot must be 1280x720 and <= 256 KiB, with zero console
-  errors and zero page errors while rendering.
+Regenerates the 4 entry screenshots from shots.json:
+  1-hero.jpg    the hero frame Romi supplied — resized to 1280x720 only
+                (PIL LANCZOS, JPEG quality 82), never edited.
+  2-title.jpg   ?shot=1 — cover: driving the beachfront avenue, golden hour.
+  3-onfoot.jpg  ?shot=2 — on foot in the Market Plaza, ROSA'S sign.
+  4-mission.jpg ?shot=4 — at the docks, M1 package marker + Rosa's line.
 
-Run from the repository root:
-    ~/workspace/tools/pw-venv/bin/python tests/shots.py
+Game shots are real renders of the game's own code in a headless browser
+(Playwright + the vendored chrome-headless-shell, software GL). Playwright's
+page.screenshot hangs at 1280x720 under SwiftShader, so captures go through
+raw CDP Page.captureScreenshot instead.
+
+Run from the repo root:  python3 tests/shots.py
+Exit 0 when all 4 files exist at 1280x720 and <= 256 KiB each, else exit 1.
 """
+
+import base64
 import json
+import os
+import socket
 import subprocess
 import sys
 import time
-import urllib.request
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-SHOTS = REPO / "screenshots"
-HERO_SRC = Path.home() / "workspace" / "user" / "media_library" / "image" / "image.png"
-NODE = Path.home() / "workspace" / "tools" / "node-v22.23.4-linux-x64" / "bin" / "node"
-PORT = 8901
-MAX_BYTES = 262144
+from PIL import Image
 
-from PIL import Image  # noqa: E402
-from playwright.sync_api import sync_playwright  # noqa: E402
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE = os.path.dirname(os.path.dirname(os.path.dirname(REPO)))
+SHOTS_DIR = os.path.join(REPO, "screenshots")
+CHROME = os.path.expanduser(
+    "~/.cache/ms-playwright/chromium_headless_shell-1255/"
+    "chrome-headless-shell-linux64/chrome-headless-shell")
 
-failures = []
-
-
-def check(cond, msg):
-    print(("  ok  " if cond else " FAIL ") + msg)
-    if not cond:
-        failures.append(msg)
+CHROME_ARGS = [
+    "--no-sandbox",
+    "--enable-unsafe-swiftshader",
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+    "--disable-dev-shm-usage",
+]
 
 
-def verify_image(path):
-    with Image.open(path) as im:
-        w, h = im.size
-    size = path.stat().st_size
-    check((w, h) == (1280, 720), f"{path.name}: is 1280x720 (got {w}x{h})")
-    check(size <= MAX_BYTES, f"{path.name}: <= 256 KiB (got {size} bytes)")
-    return size
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
-def render_hero():
-    print("hero: resizing supplied key art to 1280x720 (content untouched)")
-    with Image.open(HERO_SRC) as im:
-        im = im.convert("RGB")
-        im = im.resize((1280, 720), Image.LANCZOS)
-        quality = 88
-        while True:
-            im.save(SHOTS / "1-hero.jpg", "JPEG", quality=quality)
-            if (SHOTS / "1-hero.jpg").stat().st_size <= MAX_BYTES or quality <= 40:
-                break
-            quality -= 8
-    print(f"  hero saved at JPEG quality {quality}")
-    return verify_image(SHOTS / "1-hero.jpg")
+def load_config():
+    with open(os.path.join(REPO, "shots.json"), encoding="utf-8") as f:
+        cfg = json.load(f)
+    assert cfg["width"] == 1280 and cfg["height"] == 720, "shots.json must be 1280x720"
+    assert len(cfg["shots"]) == 4, "shots.json must name 4 shots"
+    return cfg
 
 
-def wait_server():
-    for _ in range(50):
+def make_hero(cfg, shot):
+    """Resize Romi's hero image to 1280x720. Content untouched."""
+    src = os.path.join(WORKSPACE, shot["source"])
+    assert os.path.exists(src), f"hero source missing: {src}"
+    out = os.path.join(SHOTS_DIR, shot["file"])
+    img = Image.open(src).convert("RGB")
+    img = img.resize((cfg["width"], cfg["height"]), Image.LANCZOS)
+    img.save(out, "JPEG", quality=cfg.get("quality", 82))
+    return out
+
+
+def cdp_shot(cdp, path, quality):
+    res = cdp.send("Page.captureScreenshot",
+                   {"format": "jpeg", "quality": quality, "fromSurface": True})
+    with open(path, "wb") as f:
+        f.write(base64.b64decode(res["data"]))
+    return path
+
+
+def wait_shot_ready(page, shot_no, timeout_s=90):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=1)
-            return True
+            state = page.evaluate(
+                "() => ({ ready: !!window.__shotReady, "
+                "screen: window.__GTA ? window.__GTA.screen : 0 })")
         except Exception:
-            time.sleep(0.2)
+            state = {"ready": False, "screen": 0}
+        if state["ready"] and state["screen"] == shot_no:
+            return True
+        time.sleep(0.5)
     return False
 
 
-def main():
-    SHOTS.mkdir(exist_ok=True)
-    with open(REPO / "shots.json") as f:
-        shots = json.load(f)
-
-    server = subprocess.Popen(
-        [str(NODE), "serve.ts", "--port", str(PORT)],
-        cwd=REPO,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+def make_game_shot(pw, port, cfg, shot, errors):
+    """Stage ?shot=N in a fresh browser context and capture it."""
+    browser = pw.chromium.launch(executable_path=CHROME, args=CHROME_ARGS)
     try:
-        if not wait_server():
-            print("FAIL: game server did not come up")
+        ctx = browser.new_context(
+            viewport={"width": cfg["width"], "height": cfg["height"]})
+        page = ctx.new_page()
+        page.on("console",
+                lambda m: errors.append(f"[{shot['file']}] console.{m.type}: {m.text}")
+                if m.type == "error" else None)
+        page.on("pageerror",
+                lambda e: errors.append(f"[{shot['file']}] pageerror: {e}"))
+        page.goto(
+            f"http://localhost:{port}/?shot={shot['shot']}&seed={cfg.get('seed', 7)}",
+            timeout=30000)
+        if not wait_shot_ready(page, shot["shot"]):
+            errors.append(f"[{shot['file']}] __shotReady never fired for shot {shot['shot']}")
+            return None
+        # Let the autopilot drive a moment and the HUD settle.
+        page.wait_for_timeout(1200)
+        gta = page.evaluate("() => window.__GTA ? {...window.__GTA} : null")
+        if not gta or gta.get("screen") != shot["shot"]:
+            errors.append(f"[{shot['file']}] __GTA.screen is {gta and gta.get('screen')}, "
+                          f"expected {shot['shot']}")
+            return None
+        cdp = ctx.new_cdp_session(page)
+        out = os.path.join(SHOTS_DIR, shot["file"])
+        cdp_shot(cdp, out, cfg.get("quality", 82))
+        return out
+    finally:
+        browser.close()
+
+
+def verify(path, cfg):
+    """A finished screenshot: JPEG, 1280x720, <= 256 KiB."""
+    problems = []
+    if not os.path.exists(path):
+        return ["missing file"]
+    size = os.path.getsize(path)
+    if size > 256 * 1024:
+        problems.append(f"{size} bytes > 256 KiB")
+    try:
+        with Image.open(path) as img:
+            if img.format != "JPEG":
+                problems.append(f"format {img.format}, not JPEG")
+            if img.size != (cfg["width"], cfg["height"]):
+                problems.append(f"size {img.size}, not 1280x720")
+    except Exception as exc:
+        problems.append(f"unreadable image: {exc}")
+    return problems
+
+
+def main():
+    from playwright.sync_api import sync_playwright
+
+    cfg = load_config()
+    os.makedirs(SHOTS_DIR, exist_ok=True)
+    errors = []
+    produced = []
+
+    port = free_port()
+    server = subprocess.Popen(
+        ["node", "serve.ts", str(port)], cwd=REPO,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        # Wait for the server to answer.
+        deadline = time.time() + 15
+        import urllib.request
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://localhost:{port}/", timeout=2)
+                break
+            except Exception:
+                time.sleep(0.3)
+        else:
+            print("FAIL: serve.ts did not answer")
             return 1
-        render_hero()
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                args=["--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--no-sandbox"]
-            )
-            page = browser.new_page(viewport={"width": 1280, "height": 720})
-            errors = []
-            page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type in ("error", "warning") else None)
-            page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
-            for shot in shots:
-                if not shot.get("query"):
-                    continue
-                name = shot["name"]
-                print(f"rendering {name} ({shot['query']})")
-                page.goto(f"http://127.0.0.1:{PORT}/{shot['query']}", wait_until="load")
-                try:
-                    page.wait_for_function("window.__GTA && window.__GTA.shotReady", timeout=30000)
-                except Exception:
-                    check(False, f"{name}: __shotReady never became true")
-                    continue
-                page.wait_for_timeout(400)
-                page.screenshot(path=str(SHOTS / name), animations="disabled", timeout=60000)
-                gta = page.evaluate("window.__GTA")
-                print(f"  __GTA: {gta}")
-                check(gta.get("shotReady") is True, f"{name}: shotReady true")
-                verify_image(SHOTS / name)
-            browser.close()
-        check(not errors, f"zero console/page errors during renders ({len(errors)})")
-        for e in errors[:10]:
-            print("  error: " + e)
+            for shot in cfg["shots"]:
+                if shot["kind"] == "hero":
+                    out = make_hero(cfg, shot)
+                    print(f"hero   -> {shot['file']}")
+                else:
+                    out = make_game_shot(pw, port, cfg, shot, errors)
+                    print(f"shot {shot['shot']} -> {shot['file']}")
+                if out:
+                    produced.append(out)
     finally:
         server.terminate()
         try:
-            server.wait(timeout=5)
+            server.communicate(timeout=5)
         except Exception:
             server.kill()
 
-    if failures:
-        print(f"\nshots: {len(failures)} FAILURES")
-        return 1
-    print("\nshots: all checks passed")
-    return 0
+    ok = True
+    for path in produced:
+        problems = verify(path, cfg)
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        status = "OK  " if not problems else "BAD "
+        print(f"{status} {os.path.basename(path)}  {size} bytes"
+              + (f"  ({'; '.join(problems)})" if problems else ""))
+        if problems:
+            ok = False
+    for shot in cfg["shots"]:
+        if os.path.join(SHOTS_DIR, shot["file"]) not in produced:
+            print(f"BAD  {shot['file']}  (not produced)")
+            ok = False
+    if errors:
+        ok = False
+        print("page/console errors:")
+        for e in errors:
+            print(f"  {e}")
+    print("shots.py: " + ("PASS — 4 screenshots" if ok else "FAIL"))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

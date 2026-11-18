@@ -1,42 +1,58 @@
-// Solmar Bay — gta6-01 entry program (Node 22, standard library only).
-// Hands in the game: copies this directory's game/ and screenshots/ to
-// /output (or $MAKEFUN_OUTPUT_DIR outside the grader's container) and
-// writes /output/dossier.json with the vendored make.fun library.
-// Deterministic: the same repository writes byte-identical output on
-// every run — plain recursive copies, no timestamps in the dossier.
+// main.ts — Solmar Bay entry builder (make.fun competition gta6-01).
 //
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Copies the game and its screenshots into the output directory and writes
+// dossier.json with the kit's buildDossier, byte-identical on every run.
+// Node 22 standard library only, no build step, no network.
+//
+//   MAKEFUN_OUTPUT_DIR=/output node main.ts
+//
+// The output directory defaults to /output. Only the game/, screenshots/
+// and dossier.json entries inside it are touched.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
+const OUT_DIR = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) {
-  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+// The caps the bounty scorer passes to buildDossier (from its gate.json).
+const CAPS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+};
+
+function copyEntry(name: string): void {
+  const src = join(REPO_ROOT, name);
+  const dst = join(OUT_DIR, name);
+  if (!existsSync(src)) {
+    throw new Error(`missing ${name}/ in ${REPO_ROOT}`);
+  }
+  // cpSync refuses to copy a symlink target by default; dereference is
+  // off, so a symlink inside the tree fails loudly instead of smuggling
+  // an outside file into the bundle.
+  cpSync(src, dst, { recursive: true, dereference: false });
 }
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes
-// the bytes; the others refuse an entry the scorer would refuse — more
-// than 4 screenshots or one over 256 KiB; more than 993 files in game/
-// or 48 MiB of game files in all, or a path under game/ over 1000 bytes
-// (game/ counts beside /output's own 1000-entry cap, its screenshots/
-// and dossier.json).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+function main(): void {
+  mkdirSync(OUT_DIR, { recursive: true });
+  rmSync(join(OUT_DIR, 'game'), { recursive: true, force: true });
+  rmSync(join(OUT_DIR, 'screenshots'), { recursive: true, force: true });
+  rmSync(join(OUT_DIR, 'dossier.json'), { force: true });
 
-console.log(`Solmar Bay handed in to ${out}`);
+  copyEntry('game');
+  copyEntry('screenshots');
+
+  const dossier = buildDossier(OUT_DIR, CAPS);
+  writeFileSync(join(OUT_DIR, 'dossier.json'), dossier);
+
+  console.log(`wrote ${join(OUT_DIR, 'dossier.json')} (${dossier.length} bytes)`);
+  console.log(`game/ + screenshots/ copied to ${OUT_DIR}`);
+}
+
+main();

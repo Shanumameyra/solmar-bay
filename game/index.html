@@ -3,114 +3,206 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar Bay</title>
+<title>Solmar Bay — Open-World Crime Game</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0f14;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #fff; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  .panel { position: absolute; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
-  #topleft { top: 14px; left: 16px; }
-  #cash { font-size: 28px; font-weight: 800; color: #7dff9b; letter-spacing: .5px; }
-  #stars { font-size: 22px; letter-spacing: 3px; margin-top: 2px; }
-  #stars .star { color: #555; }
-  #stars .star.lit { color: #ffd23f; }
-  #stars .star.flash { opacity: .35; }
-  #topright { top: 14px; right: 16px; }
-  #minimap { width: 160px; height: 160px; border: 2px solid rgba(255,255,255,.55);
-    border-radius: 8px; background: #1d2b33; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
-  #bottomleft { bottom: 16px; left: 16px; }
-  #hpbar { width: 200px; height: 14px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.5); border-radius: 7px; overflow: hidden; }
-  #hpfill { height: 100%; width: 100%; background: #37d67a; }
-  #weapon { font-size: 18px; font-weight: 700; margin-top: 6px; }
-  #ammo { font-size: 15px; color: #ffd23f; }
-  #bottomcenter { bottom: 16px; left: 50%; transform: translateX(-50%); text-align: center; width: 520px; max-width: 60vw; }
-  #objective { font-size: 17px; font-weight: 700; }
-  #distance { font-size: 14px; color: #ffd23f; margin-top: 2px; }
-  #dialogue { font-size: 15px; font-style: italic; color: #ffe9a8; margin-top: 6px; min-height: 20px; }
-  #bottomright { bottom: 16px; right: 16px; text-align: right; }
-  #speed { font-size: 26px; font-weight: 800; }
-  #clock { font-size: 15px; color: #ffd9a0; }
-  #messages { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-    text-align: center; width: 560px; max-width: 70vw; }
-  #messages .msg { font-size: 16px; font-weight: 700; margin-bottom: 4px;
-    text-shadow: 0 1px 4px rgba(0,0,0,.9); }
-  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-    flex-direction: column; text-align: center; background: rgba(5,10,18,.72); z-index: 10;
-    pointer-events: auto; padding: 24px; }
-  .screen h1 { font-size: 64px; letter-spacing: 6px; color: #ffb347;
-    text-shadow: 0 3px 0 #b3541e, 0 6px 24px rgba(0,0,0,.8); }
-  .screen h2 { font-size: 40px; letter-spacing: 3px; color: #ffb347; }
-  .screen p { font-size: 17px; max-width: 560px; line-height: 1.5; margin-top: 12px; color: #e8e8e8; }
-  .screen .hint { margin-top: 22px; font-size: 18px; font-weight: 700; color: #7dff9b; }
-  .screen button { pointer-events: auto; margin-top: 18px; padding: 12px 28px; font-size: 18px;
-    font-weight: 700; border: none; border-radius: 8px; background: #ffb347; color: #201304; cursor: pointer; }
-  .screen button:hover { background: #ffc46b; }
-  .screen .controls { margin-top: 18px; font-size: 14px; color: #c8d2d8; line-height: 1.7; }
+  :root {
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #14100c;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: #fff;
+  }
+  #game-root, #game-root canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #hud {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8);
+  }
+  .hud-corner { position: absolute; }
+  #hud-topleft { top: 14px; left: 16px; }
+  .hud-cash {
+    font-size: 30px;
+    font-weight: 800;
+    color: #7dff8a;
+    letter-spacing: 1px;
+  }
+  .hud-stars {
+    font-size: 24px;
+    letter-spacing: 4px;
+    color: #ffd21f;
+    margin-top: 2px;
+  }
+  .hud-stars.flashing { animation: starflash .5s steps(2) infinite; }
+  @keyframes starflash { 50% { opacity: .35; } }
+  #minimap-wrap {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    width: 160px;
+    height: 160px;
+    border: 2px solid rgba(255,255,255,.45);
+    border-radius: 6px;
+    overflow: hidden;
+    background: #223022;
+    box-shadow: 0 2px 12px rgba(0,0,0,.5);
+  }
+  #minimap-canvas { width: 160px; height: 160px; display: block; }
+  #hud-bottomleft { bottom: 16px; left: 16px; width: 240px; }
+  .hud-health-wrap {
+    width: 220px;
+    height: 14px;
+    background: rgba(0,0,0,.55);
+    border: 1px solid rgba(255,255,255,.5);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .hud-health-bar { height: 100%; width: 100%; background: #39d353; }
+  .hud-health-bar.mid { background: #ffb020; }
+  .hud-health-bar.low { background: #e5484d; }
+  .hud-health-text { font-size: 13px; font-weight: 700; margin-top: 3px; }
+  .hud-weapon { font-size: 15px; font-weight: 700; margin-top: 2px; color: #ffe9a8; }
+  #hud-bottomcenter {
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    width: min(640px, 70vw);
+  }
+  .hud-dialogue {
+    display: none;
+    font-size: 15px;
+    font-style: italic;
+    color: #ffd21f;
+    background: rgba(0,0,0,.45);
+    border-radius: 6px;
+    padding: 4px 10px;
+    margin-bottom: 6px;
+  }
+  .hud-dialogue.show { display: inline-block; }
+  .hud-objective { font-size: 17px; font-weight: 700; }
+  .hud-distance { font-size: 13px; color: #cfe3ff; margin-top: 2px; }
+  #hud-bottomright { bottom: 16px; right: 16px; text-align: right; }
+  .hud-speed { font-size: 26px; font-weight: 800; }
+  .hud-clock { font-size: 14px; color: #ffe9a8; }
+  #hud-feed {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    width: min(560px, 60vw);
+  }
+  .feed-item {
+    display: inline-block;
+    background: rgba(0,0,0,.6);
+    border-radius: 6px;
+    padding: 5px 12px;
+    margin: 3px auto;
+    font-size: 14px;
+    font-weight: 600;
+    transition: opacity .8s;
+  }
+  .feed-item.feed-wanted { color: #ff8080; border: 1px solid #ff8080; }
+  .feed-item.feed-mission { color: #ffd21f; border: 1px solid #ffd21f; }
+  .feed-item.feed-taxi { color: #7dff8a; }
+  .feed-item.feed-cash { color: #7dff8a; }
+  .feed-item.feed-fail { color: #ff8080; }
+  .feed-item.feed-heal { color: #7dff8a; }
+  .feed-fade { opacity: 0; }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 8, 6, .72);
+    pointer-events: auto;
+    text-align: center;
+  }
+  .hidden { display: none !important; }
+  #title-screen {
+    background: linear-gradient(180deg, rgba(20,12,4,.55) 0%, rgba(20,12,4,.82) 100%);
+  }
+  .title-inner { max-width: 620px; padding: 24px; }
+  .title-logo {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 64px;
+    font-weight: 900;
+    letter-spacing: 6px;
+    color: #ffd21f;
+    text-shadow: 0 3px 0 #7a1f2b, 0 8px 24px rgba(0,0,0,.8);
+  }
+  .title-tag { font-size: 17px; color: #ffe9a8; margin-top: 6px; }
+  .title-press {
+    font-size: 20px;
+    font-weight: 800;
+    margin: 22px 0 10px;
+    letter-spacing: 2px;
+  }
+  .title-press.blink { animation: blink 1.1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .title-btn {
+    pointer-events: auto;
+    cursor: pointer;
+    font-size: 17px;
+    font-weight: 700;
+    color: #14100c;
+    background: #ffd21f;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 26px;
+    margin: 6px;
+    box-shadow: 0 3px 0 #a8840f;
+  }
+  .title-btn:hover { background: #ffe066; }
+  .title-btn:active { transform: translateY(2px); box-shadow: none; }
+  .title-controls {
+    font-size: 14px;
+    line-height: 1.7;
+    color: #ddd;
+    margin-top: 14px;
+  }
+  .title-blurb { font-size: 14px; font-style: italic; color: #bbb; margin-top: 14px; }
+  .title-stats { font-size: 13px; color: #9fd6a8; margin-top: 10px; }
+  .pause-title, .busted-text, .wasted-text {
+    font-family: Georgia, serif;
+    font-size: 72px;
+    font-weight: 900;
+    letter-spacing: 8px;
+  }
+  .pause-title { color: #fff; }
+  .busted-text { color: #4d9fff; text-shadow: 0 0 30px rgba(77,159,255,.8); }
+  .wasted-text { color: #e5484d; text-shadow: 0 0 30px rgba(229,72,77,.8); }
+  .busted-sub, .wasted-sub { font-size: 16px; color: #ddd; margin-top: 8px; }
+  #busted-screen, #wasted-screen { background: rgba(10,8,6,.55); }
 </style>
 <script type="importmap">
-{"imports": {"three": "./vendor/three/three.module.min.js"}}
+{
+  "imports": {
+    "three": "./vendor/three/three.module.min.js"
+  }
+}
 </script>
 </head>
 <body>
-<canvas id="game"></canvas>
-
-<div id="hud">
-  <div class="panel" id="topleft">
-    <div id="cash">$150</div>
-    <div id="stars"><span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span></div>
-  </div>
-  <div class="panel" id="topright">
-    <canvas id="minimap" width="160" height="160"></canvas>
-  </div>
-  <div class="panel" id="bottomleft">
-    <div id="hpbar"><div id="hpfill"></div></div>
-    <div id="weapon">FISTS</div>
-    <div id="ammo">—</div>
-  </div>
-  <div class="panel" id="bottomcenter">
-    <div id="objective">Go to Rosa's café</div>
-    <div id="distance"></div>
-    <div id="dialogue">Dario, it's Rosa. Come to the café.</div>
-  </div>
-  <div class="panel" id="bottomright">
-    <div id="speed">0 km/h</div>
-    <div id="clock">17:40</div>
-  </div>
-  <div id="messages"></div>
-</div>
-
-<div class="screen" id="title" style="display:flex">
-  <h1>SOLMAR BAY</h1>
-  <p>A getaway driver. A fixer named Rosa. A city that never stops watching.
-     Steal cars, dodge the SBPD, run the jobs — and make it out rich.</p>
-  <div class="hint">Press Enter to start</div>
-  <button id="start-btn" type="button">Start</button>
-  <button id="continue-btn" type="button">Continue</button>
-  <div class="controls">
-    WASD drive / walk &nbsp;·&nbsp; Shift run / handbrake &nbsp;·&nbsp; Mouse look<br>
-    E enter / steal car &nbsp;·&nbsp; F punch &nbsp;·&nbsp; Click shoot &nbsp;·&nbsp; R reload<br>
-    1 fists &nbsp;·&nbsp; 2 pistol &nbsp;·&nbsp; B buy ammo &nbsp;·&nbsp; H honk &nbsp;·&nbsp; M mute &nbsp;·&nbsp; Esc pause
-  </div>
-</div>
-
-<div class="screen" id="pause">
-  <h2>PAUSED</h2>
-  <p>Take a breath, Dario. The city will wait.</p>
-  <div class="hint">Press Esc or P to resume</div>
-</div>
-
-<div class="screen" id="busted">
-  <h2>BUSTED</h2>
-  <p>The SBPD caught up with you. You lose $200 — or everything you had.</p>
-</div>
-
-<div class="screen" id="wasted">
-  <h2>WASTED</h2>
-  <p>You wake up at the hospital, $100 lighter.</p>
-</div>
-
+<div id="game-root"></div>
+<div id="hud"></div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

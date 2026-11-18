@@ -1,242 +1,307 @@
-// Shots — deterministic staged screenshots via ?shot=1..4&seed=7.
-// 1 cover: driving the beachfront avenue at golden hour, traffic ahead,
-//   peds on the sidewalk.
-// 2 title: the title screen over the city.
-// 3 onfoot: Dario on foot in the market plaza, peds around, a parked
-//   car to steal, the ROSA'S sign in frame.
-// 4 mission: at the docks, M1 package marker glowing, Rosa's dialogue
-//   on the HUD, containers and crane in frame.
-// After two frames render, window.__GTA.shotReady and window.__shotReady
-// are set to true.
+// shots.js — Solmar Bay screenshot staging (?shot=1..4&seed=7).
+// Per DESIGN.md the game must expose window.__GTA =
+//   { shotReady, screen, wanted, money, mission, speed }
+// and set window.__shotReady = true after staging each shot (paint twice
+// first). Each shot is staged deterministically from a fresh world via an
+// autopilot (scripted inputs, no real user), so screenshots are
+// reproducible:
+//   1-cover:   driving down the beachfront avenue at golden hour, traffic
+//              ahead, peds on the sidewalk, HUD + minimap + objective.
+//   2-onfoot:  Dario on foot in the market plaza, peds around, a parked
+//              car (stealable) in frame, cafe sign "ROSA'S" visible.
+//   3-chase:   3 stars, two SBPD cars behind the player's car, sirens
+//              (light bars on), minimap showing blue blips, "WANTED"
+//              feed message visible.
+//   4-mission: at the docks, M1 package marker glowing, Rosa's dialogue
+//              line on HUD, containers + crane in frame.
+//
+// Staging is positional (teleport + orient + set game state) plus a
+// scripted-input autopilot (G.autopilot.keys, honoured by main.js) so the
+// cover shot genuinely drives. Positions come from G.layout.
 
-export function getShotParams() {
-  let shot = 0;
-  let seed = 7;
-  try {
-    const params = new URLSearchParams(
-      typeof window !== 'undefined' ? window.location.search : '',
-    );
-    const s = parseInt(params.get('shot') || '0', 10);
-    if (s >= 1 && s <= 4) shot = s;
-    const sd = parseInt(params.get('seed') || '7', 10);
-    if (!Number.isNaN(sd)) seed = sd;
-  } catch (e) {
-    shot = 0;
-    seed = 7;
-  }
-  return { shot, seed };
-}
-
-function setPlayer(S, x, z, heading) {
-  const p = S.player || {};
-  if (p.pos) { p.pos.x = x; p.pos.z = z; }
-  else if (p.position) { p.position.x = x; p.position.z = z; }
-  else { p.x = x; p.z = z; }
-  p.heading = heading;
-  p.h = heading;
-  if (typeof p.speed === 'number') p.speed = 0;
-  // The mesh is only moved by updatePlayer in play mode; staged shots
-  // never call it, so sync the mesh here or the player stays at spawn.
-  if (p.mesh) {
-    p.mesh.position.set(x, 0, z);
-    p.mesh.rotation.y = heading;
-    p.mesh.visible = true;
-  }
-}
-
-function putCarNear(S, car, x, z, heading) {
-  if (!car) return;
-  car.x = x;
-  car.z = z;
-  car.heading = heading;
-  if (car.pos) { car.pos.x = x; car.pos.z = z; }
-  if (car.mesh) {
-    car.mesh.position.set(x, 0, z);
-    car.mesh.rotation.y = heading;
-  }
-}
-
-function placePeds(S, spots) {
-  const peds = S.peds || [];
-  spots.forEach((spot, i) => {
-    const ped = peds[i];
-    if (!ped) return;
-    ped.x = spot.x;
-    ped.z = spot.z;
-    if (ped.pos) { ped.pos.x = spot.x; ped.pos.z = spot.z; }
-    ped.heading = spot.h ?? 0;
-    ped.fleeing = false;
-    if (ped.mesh) {
-      ped.mesh.position.set(spot.x, 0, spot.z);
-      ped.mesh.rotation.y = spot.h ?? 0;
-    }
-  });
-}
-
-function setPlayerCar(S, car, x, z, heading, speed) {
-  if (!car) return;
-  putCarNear(S, car, x, z, heading);
-  car.speed = speed ?? 0;
-  const p = S.player || {};
-  p.car = car;
-  p.inCar = true;
-  p.driving = true;
-  p.onFoot = false;
-  if (p.mesh) p.mesh.visible = false;
-  setPlayer(S, x, z, heading);
-  if (p.mesh) p.mesh.visible = false;
-  if (typeof p.speed === 'number') p.speed = speed ?? 0;
-}
-
-export function stageShot(S, n) {
-  S.shot = n;
-  S.shotFrames = 0;
-  S.shotReady = false;
-  S.mode = 'shot';
-  const m = S.missions;
-  const lm = m?.landmarks || {};
-
-  if (n === 1) {
-    // Cover: driving down the beachfront avenue, golden hour.
-    const car = (S.parkedCars && S.parkedCars[0]) || (S.cars && S.cars[0]) || null;
-    setPlayerCar(S, car, -170, 20, Math.PI, 18);
-    S.camHeading = Math.PI;
-    // Traffic ahead on the same avenue.
-    const ahead = S.trafficCars || [];
-    if (ahead[0]) putCarNear(S, ahead[0], -170, 55, Math.PI);
-    if (ahead[1]) putCarNear(S, ahead[1], -158, 80, Math.PI);
-    if (ahead[2]) putCarNear(S, ahead[2], -182, 100, 0);
-    placePeds(S, [
-      { x: -160, z: 5, h: 0 },
-      { x: -160, z: 35, h: Math.PI },
-      { x: -180, z: 60, h: Math.PI / 2 },
-      { x: -160, z: 90, h: 0 },
-    ]);
-    if (S.police) { S.police.stars = 0; S.police.heat = 0; }
-    if (m) {
-      m.index = 1;
-      m.step = 'pickup';
-      m.marker = { ...(lm.docks || { x: 170, z: 10 }) };
-      m.dialogue = "Rosa: Package is waiting at the docks. Don't keep me waiting.";
-    }
-    S.objective = 'Collect the package at the docks';
-    toast(S, 'Welcome to Solmar Bay');
-  } else if (n === 2) {
-    // Title: title screen over the city, camera high over the plaza.
-    setPlayer(S, 0, 60, Math.PI);
-    S.camHeading = Math.PI;
-    S.shotScreen = 'title';
-    if (S.hud && typeof S.hud.showScreen === 'function') {
-      // showScreen is imported by main; the hud object itself holds refs.
-    }
-    if (m) {
-      m.index = 0;
-      m.step = 'call';
-      m.marker = { ...(lm.cafe || { x: 0, z: 0 }) };
-      m.dialogue = "Dario, it's Rosa. Come to the café.";
-    }
-    S.objective = "Go to Rosa's café";
-  } else if (n === 3) {
-    // On foot in the market plaza: peds, a stealable parked car, the
-    // ROSA'S neon (downtown tower at 84,-166; heading 2.70 aims at it).
-    setPlayer(S, 0, 12, 2.7);
-    const p = S.player || {};
-    p.car = null;
-    p.inCar = false;
-    p.driving = false;
-    p.onFoot = true;
-    S.camHeading = 2.7;
-    const parked = S.parkedCars || [];
-    if (parked[0]) putCarNear(S, parked[0], 12, 4, Math.PI / 2);
-    if (parked[1]) putCarNear(S, parked[1], -14, -6, -Math.PI / 2);
-    placePeds(S, [
-      { x: -6, z: 4, h: 0.5 },
-      { x: 8, z: 20, h: Math.PI },
-      { x: -10, z: 22, h: -0.6 },
-      { x: 4, z: -8, h: 2.4 },
-      { x: 16, z: 14, h: Math.PI / 2 },
-    ]);
-    if (S.police) { S.police.stars = 0; S.police.heat = 0; }
-    if (m) {
-      m.index = 0;
-      m.step = 'call';
-      m.marker = { ...(lm.cafe || { x: 0, z: 0 }) };
-      m.dialogue = "Dario, it's Rosa. Come to the café.";
-    }
-    S.objective = "Go to Rosa's café";
-  } else if (n === 4) {
-    // Mission: at the docks, M1 package marker glowing, Rosa on the HUD.
-    // Staged just south of the container field, facing the marker at
-    // (160,50), so containers + crane read in frame and the marker beam
-    // is visible beyond them.
-    setPlayer(S, 155, 0, 0.1);
-    S.camHeading = 0.1;
-    const car = (S.parkedCars && S.parkedCars[1]) || (S.cars && S.cars[0]) || null;
-    if (car) putCarNear(S, car, 148, -2, 0.3);
-    placePeds(S, [
-      { x: 158, z: -4, h: 0 },
-      { x: 168, z: 18, h: Math.PI },
-      { x: 145, z: 28, h: 1.2 },
-    ]);
-    if (S.police) { S.police.stars = 0; S.police.heat = 0; }
-    if (m) {
-      m.index = 1;
-      m.step = 'pickup';
-      m.marker = { ...(lm.docks || { x: 170, z: 10 }) };
-      m.dialogue = "Rosa: Package is waiting at the docks. Don't keep me waiting.";
-      m.active = true;
-    }
-    S.objective = 'Collect the package at the docks';
-    toast(S, 'New job from Rosa');
-  }
-
-  // Keep the HUD honest for the shot.
-  if (S.player && typeof S.player.money !== 'number') S.player.money = 150;
-  exposeGTA(S);
-}
-
-function toast(S, text) {
-  if (S.messages) S.messages.push({ text, t: S.time || 0 });
-}
-
-// Call once per rendered frame (from the main loop, after render).
-// After two frames, the shot is declared ready for capture.
-export function markShotFrame(S) {
-  if (S.mode !== 'shot' || typeof S.shotFrames !== 'number') return;
-  S.shotFrames += 1;
-  if (S.shotFrames >= 2) {
-    S.shotReady = true;
-    if (typeof window !== 'undefined') {
-      window.__shotReady = true;
-      if (window.__GTA) window.__GTA.shotReady = true;
-    }
-  }
-}
-
-function speedOf(S) {
-  const p = S.player || {};
-  if (p.car && typeof p.car.speed === 'number') return Math.abs(p.car.speed);
-  return Math.abs(p.speed ?? 0);
-}
-
-export function exposeGTA(S) {
-  if (typeof window === 'undefined') return;
-  const screen = S.mode === 'shot'
-    ? (S.shot === 2 ? 'title' : (S.shotScreen || 'play'))
-    : S.mode;
-  window.__GTA = {
-    shotReady: !!S.shotReady,
-    screen,
-    wanted: S.police?.stars || 0,
-    money: typeof S.player?.money === 'number' ? S.player.money : (S.money || 0),
-    mission: S.missions?.index ?? 0,
-    step: S.missions?.step ?? '',
-    speed: Math.round(speedOf(S) * 3.6),
-    // Position + driving state, for the automated playtest to steer by.
-    x: Math.round((S.player?.x ?? 0) * 10) / 10,
-    z: Math.round((S.player?.z ?? 0) * 10) / 10,
-    heading: Math.round((S.player?.heading ?? 0) * 100) / 100,
-    inCar: !!(S.player && S.player.car),
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function rng() {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  if (S.shotReady) window.__shotReady = true;
+}
+
+export function parseShotParams(search) {
+  const params = new URLSearchParams(search || '');
+  const shot = parseInt(params.get('shot') || '0', 10);
+  const seed = parseInt(params.get('seed') || '7', 10);
+  return {
+    shot: shot >= 1 && shot <= 4 ? shot : 0,
+    seed: Number.isFinite(seed) ? seed : 7,
+  };
+}
+
+export function createShots(G) {
+  let staged = 0;
+  let paints = 0;
+  let waitingPaints = false;
+
+  function layout() {
+    return Object.assign(
+      {
+        cafe: { x: 0, z: 22 },
+        docks: { x: 182, z: 24 },
+        sportsCar: { x: -182, z: -60 },
+        garage: { x: 28, z: 172 },
+        safehouse: { x: -100, z: 172 },
+        spawn: { x: 0, z: 26 },
+      },
+      (G && G.layout) || {},
+    );
+  }
+
+  function toast(msg, kind) {
+    if (G && G.hud && typeof G.hud.toast === 'function') G.hud.toast(msg, kind || 'info');
+  }
+
+  function setCamera(pos, lookAt) {
+    // main.js honours G.shotCamera in its camera update while staging.
+    if (G) G.shotCamera = { pos: { ...pos }, lookAt: { ...lookAt } };
+  }
+
+  function clearCamera() {
+    if (G) G.shotCamera = null;
+  }
+
+  function exposeGTA(screen) {
+    if (typeof window === 'undefined' || !G) return;
+    window.__GTA = {
+      shotReady: staged > 0,
+      screen: screen || staged,
+      wanted: G.wanted || 0,
+      money: G.money || 0,
+      mission: (G.missions && G.missions.current && G.missions.current())
+        ? G.missions.current().id
+        : null,
+      speed: typeof G.getPlayerSpeed === 'function' ? G.getPlayerSpeed() : 0,
+    };
+  }
+
+  // Two rAF paints, then the shot is ready for capture.
+  function markReady(screen) {
+    if (typeof window === 'undefined') return;
+    paints = 0;
+    waitingPaints = true;
+    const tick = () => {
+      paints += 1;
+      if (paints >= 2) {
+        waitingPaints = false;
+        exposeGTA(screen);
+        window.__shotReady = true;
+        if (window.__GTA) window.__GTA.shotReady = true;
+      } else {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  }
+
+  function ensurePlaying() {
+    if (G && G.state === 'title' && typeof G.startGame === 'function') {
+      G.startGame();
+    }
+    if (G) G.state = 'playing';
+    if (G && G.hud) G.hud.hideTitle();
+  }
+
+  function putPlayerInCarAt(x, z, heading, sports) {
+    // Preferred path: the vehicle adapter owned by main.js.
+    if (G && typeof G.spawnVehicle === 'function') {
+      try {
+        const veh = G.spawnVehicle({ x, z, heading, sports: !!sports, color: sports ? 0xffd21f : 0xcc2222 });
+        if (veh && typeof G.enterVehicle === 'function') G.enterVehicle(veh);
+        return veh;
+      } catch (_err) { /* fall through to the on-foot fallback */ }
+    }
+    if (G && typeof G.teleportPlayer === 'function') G.teleportPlayer(x, z, heading);
+    return null;
+  }
+
+  function stageCover(rng) {
+    const L = layout();
+    // Beachfront avenue (x = -175 street), heading north (-z), golden hour.
+    putPlayerInCarAt(-175, 40, Math.PI, false);
+    if (G) {
+      G.autopilot = { keys: ['KeyW'], steer: 0 };
+      G.money = 1250;
+    }
+    // Traffic ahead of the player on the same avenue.
+    if (G && typeof G.spawnTrafficAt === 'function') {
+      G.spawnTrafficAt(-175, 0, Math.PI);
+      G.spawnTrafficAt(-169, -40, Math.PI);
+    }
+    setCamera(
+      { x: -168, y: 7, z: 62 },
+      { x: -175, y: 1.5, z: -20 },
+    );
+    toast('M1 — The Pickup: drive to the docks', 'mission');
+    if (G && G.hud) G.hud.setObjective('Drive to the docks and collect the package', 214);
+    if (G && G.missions && typeof G.missions.start === 'function') {
+      G.money = G.money || 0;
+      G.missionIndex = 1;
+      G.missions.start(1);
+      // Keep the player at the beachfront (start() does not teleport).
+      if (typeof G.teleportPlayer === 'function') G.teleportPlayer(-175, 40, Math.PI);
+      putPlayerInCarAt(-175, 40, Math.PI, false);
+      if (G) G.autopilot = { keys: ['KeyW'], steer: 0 };
+    }
+    void rng;
+  }
+
+  function stageOnFoot(rng) {
+    const L = layout();
+    if (G && typeof G.teleportPlayer === 'function') {
+      // On foot on the z=25 street, facing the cafe (ROSA'S sign). The
+      // player stands clear of the plaza palm at (0, 26) so no trunk
+      // blocks the camera's view of him.
+      G.teleportPlayer(18, 28, -1.89);
+    }
+    if (G) {
+      G.autopilot = null;
+      G.money = 430;
+    }
+    // A stealable parked car in frame, just west of the player.
+    if (G && typeof G.spawnVehicle === 'function') {
+      try {
+        G.spawnVehicle({ x: 14, z: 24, heading: Math.PI / 2, parked: true, color: 0x2266cc });
+      } catch (_err) { /* ignore */ }
+    }
+    // Camera on the same street, east of the plaza: the sightline runs
+    // down the open street to the cafe, so no plaza block stands in the
+    // way. (Cameras south of the forecourt look straight through the
+    // (10, 41) block.)
+    setCamera(
+      { x: 40, y: 5, z: 25 },
+      { x: 0, y: 1.5, z: 24 },
+    );
+    toast("Rosa: \"Dario, it's Rosa. Come to the cafe.\"", 'mission');
+    if (G && G.hud) {
+      G.hud.setDialogue("Dario, it's Rosa. Come to the cafe. We need to talk.");
+      G.hud.setObjective("Go to Rosa's cafe in the Market Plaza", 19);
+    }
+    if (G && G.missions && typeof G.missions.start === 'function') {
+      G.missionIndex = 0;
+      G.missions.start(0);
+    }
+    void rng;
+  }
+
+  function stageChase(rng) {
+    const L = layout();
+    putPlayerInCarAt(-25, 60, Math.PI, false);
+    if (G) {
+      G.autopilot = { keys: ['KeyW'], steer: 0 };
+      G.money = 890;
+    }
+    if (G && G.police) {
+      G.police.setWanted(3, 'shot');
+      // Two SBPD cars right behind the player.
+      G.police.spawnCarAt(-27, 78, 'chase');
+      G.police.spawnCarAt(-22, 84, 'chase');
+    }
+    setCamera(
+      { x: -18, y: 8, z: 82 },
+      { x: -25, y: 1.5, z: 40 },
+    );
+    toast('WANTED ★★★ — the SBPD is on you', 'wanted');
+    if (G && G.hud) G.hud.setObjective('Reach the safehouse in the barrios — lose the cops!', 132, 118);
+    if (G && G.missions && typeof G.missions.start === 'function') {
+      G.missionIndex = 3;
+      G.missions.start(3);
+      if (typeof G.teleportPlayer === 'function') G.teleportPlayer(-25, 60, Math.PI);
+      putPlayerInCarAt(-25, 60, Math.PI, false);
+      if (G) G.autopilot = { keys: ['KeyW'], steer: 0 };
+    }
+    void rng;
+    void L;
+  }
+
+  function stageMission(rng) {
+    const L = layout();
+    // At the docks, on foot next to the glowing package marker.
+    if (G && typeof G.teleportPlayer === 'function') {
+      G.teleportPlayer(168, 34, Math.PI / 2);
+    }
+    if (G) {
+      G.autopilot = null;
+      G.money = 150;
+    }
+    // Camera south-west of the yard, looking north-east: the player and
+    // the package marker sit centre-frame, the new container cluster and
+    // the dock crane behind them.
+    setCamera(
+      { x: 158, y: 7, z: 48 },
+      { x: 185, y: 1.5, z: 12 },
+    );
+    if (G && G.missions && typeof G.missions.start === 'function') {
+      G.missionIndex = 1;
+      G.missions.start(1);
+    }
+    if (G && G.hud) {
+      G.hud.setDialogue('A package is waiting at the docks. Pick it up, bring it back here.');
+      G.hud.setObjective('Drive to the docks and collect the package', 16);
+    }
+    void rng;
+    void L;
+  }
+
+  const stages = { 1: stageCover, 2: stageOnFoot, 3: stageChase, 4: stageMission };
+
+  const api = {
+    get staged() {
+      return staged;
+    },
+    get waitingPaints() {
+      return waitingPaints;
+    },
+
+    // Stage shot n (1-4). Returns false for an unknown number.
+    stage(n, seed) {
+      const fn = stages[n];
+      if (!fn || !G) return false;
+      const rng = mulberry32(Number.isFinite(seed) ? seed : 7);
+      if (typeof window !== 'undefined') window.__shotReady = false;
+      ensurePlaying();
+      if (G.police) G.police.clear();
+      if (G.police) G.police.clearWanted();
+      fn(rng);
+      staged = n;
+      exposeGTA(n);
+      markReady(n);
+      return true;
+    },
+
+    // Read ?shot= / ?seed= from the URL and stage it. Called once by
+    // main.js after the world is built. Returns the shot number or 0.
+    stageFromURL() {
+      if (typeof window === 'undefined' || !window.location) return 0;
+      const { shot, seed } = parseShotParams(window.location.search);
+      if (!shot) return 0;
+      return api.stage(shot, seed) ? shot : 0;
+    },
+
+    clear() {
+      staged = 0;
+      waitingPaints = false;
+      clearCamera();
+      if (G) G.autopilot = null;
+      if (typeof window !== 'undefined') window.__shotReady = false;
+    },
+
+    update(_dt) {
+      // Keep __GTA live while a shot is staged.
+      if (staged > 0) exposeGTA(staged);
+    },
+  };
+
+  return api;
 }
