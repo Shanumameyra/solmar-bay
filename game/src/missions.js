@@ -1,381 +1,459 @@
-// Solmar Bay — missions (Worker B). Three story missions from Mama Rosa,
-// sequential, plus repeatable taxi jobs and cash pickups.
-// Data (names, rewards, times, intros, step text) lives in CONFIG.MISSIONS;
-// this file implements the step machine. Markers are state.mission.marker
-// {x,z} so the HUD, minimap and renderer beacon can draw them. The taxi
-// customer and cash pickups live in state.peds / state.pickups.
-// State machine: idle -> active -> done / failed. Fail (timer out or busted)
-// retries from the café; cash earned is kept. After M3 the loop replays at
-// half reward.
+// missions.js — story missions from Mama Rosa, taxi fares, cash pickups.
+//
+// Owns state.mission / state.pickups / state.taxiMarker. The step INDEX is
+// `stepIndex` (NOT `step` — that name is the update method; assigning
+// this.step = 0 once overwrote the method and froze every mission).
+// Uses Math.random (shots.js seeds it while staging, so staged missions
+// are deterministic).
 
 import { CONFIG } from './config.js';
 import { createCar } from './vehicle.js';
-import { hitsCollider } from './city.js';
 
-const MISSIONS = CONFIG.MISSIONS;
-const TAXI_FARE = CONFIG.TAXI_FARE;
-const TAXI_TIME = 90;
-const CASH_AMOUNT = CONFIG.CASH_PICKUP;
-const CASH_COUNT = 3;
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-// Step machine per mission (targets are landmark names; radius in metres).
-// M1: docks (7 m) -> café (7 m), whole-mission timer 150 s.
-// M2: steal the silver sports car -> garage (9 m).
-// M3: safehouse (9 m, +3 stars on start) -> lose the heat (wanted 0).
-const STEPS = {
-  1: [
-    { type: 'goto', target: 'docks', radius: 7 },
-    { type: 'goto', target: 'cafe', radius: 7 },
-  ],
-  2: [
-    { type: 'steal', target: 'beach', radius: 10 },
-    { type: 'deliverCar', target: 'garage', radius: 9 },
-  ],
-  3: [
-    { type: 'goto', target: 'safehouse', radius: 9, heat: 3 },
-    { type: 'escape', target: 'safehouse', radius: 9 },
-  ],
-};
+function distTo(ax, az, bx, bz) {
+  return Math.hypot(ax - bx, az - bz);
+}
+
+function pushEv(state, ev) {
+  if (state && Array.isArray(state.events)) {
+    state.events.push({ t: state.time ?? 0, ...ev });
+  }
+}
+
+function inCollider(state, x, z, pad) {
+  const cs = state.colliders;
+  if (!cs) return false;
+  for (const c of cs) {
+    if (x > c.minX - pad && x < c.maxX + pad && z > c.minZ - pad && z < c.maxZ + pad) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function landmark(state, key) {
+  return (
+    (state.landmarks && state.landmarks[key]) ||
+    (CONFIG.LANDMARKS && CONFIG.LANDMARKS[key]) || { x: 0, z: 0 }
+  );
+}
+
+function missionDef(i) {
+  const m = (CONFIG.MISSIONS || [])[i];
+  return (
+    m || { id: 'M' + i, name: 'Job ' + (i + 1), reward: 0, time: 0, intro: '', steps: [] }
+  );
+}
+
+function nextCarId(state) {
+  let max = 0;
+  let count = 0;
+  for (const c of state.cars || []) {
+    count++;
+    if (typeof c.id === 'number' && c.id > max) max = c.id;
+  }
+  return Math.max(max, count) + 1;
+}
 
 export function createMissions() {
-  const missions = {
-    index: 0,          // 0 = intro (go to the café), 1..3 = story missions
-    phase: 'idle',     // idle | active
+  const api = {
+    index: 0,
+    phase: 'idle', // 'idle' | 'active' | 'done' | 'failed'
     stepIndex: 0,
     timer: 0,
-    timerMax: 0,
     markedCarId: null,
-    taxi: { active: false, phase: 'wait', customer: null, dest: null, timer: 0, nextIn: 8 },
+    taxi: { phase: 'none', customerId: null, dest: null, destName: '' },
     pickupsSpawned: false,
+    _done: {},
+    _nextPending: null,
+    _m0Started: false,
+    _taxiT: 8,
 
     reset() {
-      this.index = 0;
-      this.phase = 'idle';
-      this.stepIndex = 0;
-      this.timer = 0;
-      this.timerMax = 0;
-      this.markedCarId = null;
-      this.taxi = { active: false, phase: 'wait', customer: null, dest: null, timer: 0, nextIn: 8 };
-      this.pickupsSpawned = false;
+      api.index = 0;
+      api.phase = 'idle';
+      api.stepIndex = 0;
+      api.timer = 0;
+      api.markedCarId = null;
+      api.taxi = { phase: 'none', customerId: null, dest: null, destName: '' };
+      api.pickupsSpawned = false;
+      api._done = {};
+      api._nextPending = null;
+      api._m0Started = false;
+      api._taxiT = 8;
     },
 
+    // Load the next mission to play from a save: earlier missions count as
+    // done (replayable for half reward).
     loadIndex(i) {
-      this.index = Math.max(0, Math.min(3, i | 0));
-      this.phase = 'idle';
-      this.stepIndex = 0;
-      this.timer = 0;
-      this.markedCarId = null;
+      api.index = clamp(i | 0, 0, 3);
+      api.phase = 'idle';
+      api.stepIndex = 0;
+      api.timer = 0;
+      api.markedCarId = null;
+      api._nextPending = null;
+      api._m0Started = api.index !== 0;
+      api._done = {};
+      for (let k = 0; k < api.index; k++) api._done[k] = true;
     },
 
     start(i, state) {
-      const def = MISSIONS[i];
-      if (!def) return;
-      this.index = i;
-      this.phase = 'active';
-      this.stepIndex = 0;
-      this.markedCarId = null;
-      this.timer = def.time || 0;
-      this.timerMax = def.time || 0;
-      this.applyStep(state);
-      pushEvent(state, 'mission', `${def.name} — ${def.intro}`);
-      if (state.mission) {
-        state.mission.index = i;
-        state.mission.phase = 'active';
-        state.mission.dialogue = def.intro;
+      const def = missionDef(i);
+      api.index = i;
+      api.phase = 'active';
+      api.stepIndex = 0;
+      api.timer = def.time || 0;
+      api.markedCarId = null;
+      api._nextPending = null;
+      if (i === 0) api._m0Started = true;
+      if (i === 2) api.markCar(state);
+      if (i === 3) {
+        state.systems?.police?.addHeat?.(3, 'the whole SBPD is on you', state);
+        pushEv(state, { type: 'mission', text: 'Three stars — run for the safehouse!' });
       }
+      pushEv(state, {
+        type: 'mission',
+        text: `New job: ${def.name}${def.reward ? ` — $${def.reward}` : ''}`,
+      });
+      api.applyStep(state);
+      api._sync(state);
     },
 
+    // Sets state.mission objective / marker / dialogue for the current
+    // (index, stepIndex). Prefers CONFIG step text when it exists.
     applyStep(state) {
-      const def = MISSIONS[this.index];
-      if (!def) return;
-      const step = (STEPS[this.index] || [])[this.stepIndex];
-      if (!step) return;
-      if (step.heat && state.systems && state.systems.police) {
-        state.systems.police.addHeat(step.heat, 'mission', state);
-      }
-      if (step.type === 'steal') this.markCar(state);
-      const target = landmark(state, step.target);
-      if (state.mission) {
-        state.mission.step = this.stepIndex;
-        state.mission.objective = def.steps[this.stepIndex] || def.intro;
-        state.mission.marker = target ? { x: target.x, z: target.z } : null;
-        state.mission.timer = this.timer;
-        state.mission.dialogue = def.intro;
-      }
-    },
-
-    markCar(state) {
-      const cars = state.cars || [];
-      const beach = landmark(state, 'beach') || { x: -150, z: 0 };
-      let car = cars.find((c) => c.kind === 'sports' && c.isParked);
-      if (!car) {
-        // Use vehicle.js createCar for the full car shape (len/wid/hgt/
-        // topSpeed/steer/...); a hand-built object without len/wid
-        // poisons collideCars with NaN and breaks the renderer.
-        car = createCar('sports', beach.x + 6, beach.z + 4, 0,
-          { id: 90000 + Math.floor(Math.random() * 1000), isParked: true });
-        cars.push(car);
-      }
-      car.color = CONFIG.CAR_MODELS.sports.color; // the silver Vespera GT
-      car.missionMarked = true;
-      this.markedCarId = car.id;
-    },
-
-    step(dt, state) {
-      if (!state || !state.player) return;
-      const player = state.player;
-      const mission = state.mission || (state.mission = {});
-      // Keep the shared mission object in sync.
-      mission.index = this.index;
-      mission.phase = this.phase;
-
-      // Cash pickups: spawn once, collect on proximity, respawn later.
-      if (!this.pickupsSpawned) {
-        this.pickupsSpawned = true;
-        state.pickups = [];
-        for (let i = 0; i < CASH_COUNT; i++) state.pickups.push(this.newPickup(state));
-      }
-      if (state.pickups) {
-        for (const pk of state.pickups) {
-          if (pk.taken) {
-            pk.respawnT -= dt;
-            if (pk.respawnT <= 0) Object.assign(pk, this.newPickup(state), { taken: false });
-            continue;
-          }
-          if (Math.hypot(player.x - pk.x, player.z - pk.z) < 2.5) {
-            pk.taken = true;
-            pk.respawnT = 45;
-            state.money = (state.money || 0) + CASH_AMOUNT;
-            state.stats.bestCash = Math.max(state.stats.bestCash || 0, state.money);
-            pushEvent(state, 'cash', `Cash pickup +$${CASH_AMOUNT}`);
-            state.fxBurst = { type: 'pickup', x: pk.x, y: 1.2, z: pk.z };
-          }
-        }
-      }
-
-      // Idle: walk/drive into the café marker to start the pending mission.
-      // index 0 = intro (first job is M1); after a mission completes the
-      // index already points at the next one (1..3, replay wraps to 1).
-      if (this.phase === 'idle') {
-        const cafe = landmark(state, 'cafe');
-        const next = this.index === 0 ? 1 : this.index;
-        mission.objective = "Go to Rosa's café — Mama Rosa is calling";
-        mission.marker = cafe ? { x: cafe.x, z: cafe.z } : null;
-        mission.dialogue = "Rosa: Dario, it's Rosa. Come to the café.";
-        mission.timer = 0;
-        if (cafe && Math.hypot(player.x - cafe.x, player.z - cafe.z) < 8) {
-          this.start(next, state);
-        }
-        this.taxiStep(dt, state);
-        return;
-      }
-
-      const def = MISSIONS[this.index];
-      if (!def) { this.phase = 'idle'; return; }
-      const steps = STEPS[this.index] || [];
-      const step = steps[this.stepIndex];
-      if (!step) { this.complete(state); return; }
-
-      // Whole-mission timer.
-      if (this.timer > 0) {
-        this.timer -= dt;
-        mission.timer = Math.max(0, this.timer);
-        if (this.timer <= 0) {
-          this.fail(state, "Time's up — the job fell through");
-          return;
-        }
-      }
-
-      const target = landmark(state, step.target);
-      const dist = target ? Math.hypot(player.x - target.x, player.z - target.z) : 1e9;
-      let advanced = false;
-      if (step.type === 'goto') {
-        if (dist < step.radius) advanced = true;
-      } else if (step.type === 'escape') {
-        // Reach the safehouse AND lose the heat.
-        if (dist < step.radius && (state.wanted || 0) === 0) advanced = true;
-      } else if (step.type === 'steal') {
-        if (player.inCar && player.carId === this.markedCarId) {
-          advanced = true;
-          if (state.systems && state.systems.police) {
-            state.systems.police.addHeat(2, 'steal', state);
-          }
-          pushEvent(state, 'info', 'You stole the sports car — 2 stars!');
-        }
-      } else if (step.type === 'deliverCar') {
-        if (player.inCar && player.carId === this.markedCarId && dist < step.radius) {
-          advanced = true;
-        }
-      }
-      if (advanced) {
-        this.stepIndex += 1;
-        if (this.stepIndex >= steps.length) {
-          this.complete(state);
+      const def = missionDef(api.index);
+      const s = (def.steps || [])[api.stepIndex] || {};
+      let objective = s.objective;
+      let markerKey = s.marker;
+      let dialogue = s.dialogue;
+      if (api.index === 0) {
+        objective = objective || "Go to Rosa's café";
+        markerKey = markerKey || 'cafe';
+        dialogue = dialogue || "Dario, it's Rosa. Come to the café.";
+      } else if (api.index === 1) {
+        if (api.stepIndex === 0) {
+          objective = objective || 'Drive to the docks';
+          markerKey = markerKey || 'docks';
+          dialogue = dialogue || 'Pick up the package at the docks, Dario.';
+        } else if (api.stepIndex === 1) {
+          objective = objective || 'Collect the package';
+          markerKey = markerKey || 'docks';
+          dialogue = dialogue || "It's in the container yard — grab it.";
         } else {
-          this.applyStep(state);
-          pushEvent(state, 'mission', def.steps[this.stepIndex] || '');
+          objective = objective || "Deliver the package to Rosa's café";
+          markerKey = markerKey || 'cafe';
+          dialogue = dialogue || "Bring it home, Dario. The clock's ticking.";
         }
+      } else if (api.index === 2) {
+        if (api.stepIndex === 0) {
+          objective = objective || 'Steal the yellow sports car at the beach';
+          markerKey = markerKey || 'beachCar';
+          dialogue = dialogue || 'Yellow sports car, beachfront. Take it — quick.';
+        } else {
+          objective = objective || 'Bring the sports car to the garage';
+          markerKey = markerKey || 'garage';
+          dialogue = dialogue || 'Nice. Now get it to the garage in one piece.';
+        }
+      } else if (api.index === 3) {
+        objective = objective || 'Reach the safehouse in the barrios';
+        markerKey = markerKey || 'safehouse';
+        dialogue =
+          dialogue ||
+          "Three stars on you, Dario. Get to the safehouse — you're free of the debt after this.";
       }
-      this.taxiStep(dt, state);
+      const L = markerKey ? landmark(state, markerKey) : null;
+      state.mission = state.mission || {};
+      state.mission.objective = objective || 'Explore Solmar Bay';
+      state.mission.marker = L ? { x: L.x, z: L.z } : null;
+      state.mission.dialogue = dialogue || '';
+      api._sync(state);
     },
 
     complete(state) {
-      const def = MISSIONS[this.index];
-      if (!def) return;
-      const replay = (state.stats.missionsDone || 0) >= 3;
-      const reward = replay ? Math.floor(def.reward / 2) : def.reward;
-      state.money = (state.money || 0) + reward;
-      state.stats.missionsDone = (state.stats.missionsDone || 0) + 1;
-      state.stats.bestCash = Math.max(state.stats.bestCash || 0, state.money);
-      pushEvent(state, 'mission-complete', `Mission complete +$${reward} — ${def.name}`);
-      state.fxBurst = { type: 'pickup', x: state.player.x, y: 1.5, z: state.player.z };
-      // Next mission starts when the player returns to the café.
-      this.index += 1;
-      if (this.index > 3) this.index = 1; // replay loop at half reward
-      this.stepIndex = 0;
-      this.markedCarId = null;
-      this.phase = 'idle';
-      if (state.mission) {
-        state.mission.index = this.index;
-        state.mission.phase = 'idle';
-        state.mission.objective = 'Job done — see Rosa for the next one';
-        state.mission.marker = landmark(state, 'cafe');
-        state.mission.dialogue = 'Rosa: Beautiful work, Dario. Come by the café when you want more.';
+      const def = missionDef(api.index);
+      let reward = def.reward || 0;
+      if (api._done[api.index]) reward = Math.floor(reward / 2);
+      state.money = (state.money ?? 0) + reward;
+      if (state.stats) {
+        state.stats.missionsDone = (state.stats.missionsDone ?? 0) + 1;
+        state.stats.bestCash = Math.max(state.stats.bestCash ?? 0, state.money);
       }
+      api._done[api.index] = true;
+      api._m0Started = true;
+      api.phase = 'idle';
+      api._nextPending = api.index < 3 ? api.index + 1 : null;
+      api.timer = 0;
+      const cafe = landmark(state, 'cafe');
+      state.mission = state.mission || {};
+      state.mission.marker =
+        api._nextPending != null ? { x: cafe.x, z: cafe.z } : null;
+      state.mission.objective =
+        api._nextPending != null
+          ? "Go to Rosa's café for the next job"
+          : 'Free roam — taxi fares pay $45';
+      state.mission.dialogue =
+        api.index === 3
+          ? "You're free of the debt — for now."
+          : 'Good work, Dario. Come see me at the café.';
+      pushEv(state, {
+        type: 'missionComplete',
+        text: reward > 0 ? `Mission complete +$${reward}` : 'Mission complete',
+        reward,
+      });
+      if (state.player) {
+        state.fxBurst = { type: 'glint', x: state.player.x, y: 1.6, z: state.player.z };
+      }
+      api._sync(state);
     },
 
-    fail(state, reason) {
-      pushEvent(state, 'mission-failed', reason + ' — try again at the café');
-      this.phase = 'idle';
-      this.stepIndex = 0;
-      this.timer = 0;
-      this.markedCarId = null;
-      if (state.mission) {
-        state.mission.phase = 'idle';
-        state.mission.objective = "Go to Rosa's café — Mama Rosa is calling";
-        state.mission.marker = landmark(state, 'cafe');
-        state.mission.dialogue = 'Rosa: Come back to the café. We try again.';
-      }
+    fail(state, why) {
+      api.phase = 'idle';
+      api._nextPending = api.index;
+      api.timer = 0;
+      const cafe = landmark(state, 'cafe');
+      state.mission = state.mission || {};
+      state.mission.marker = { x: cafe.x, z: cafe.z };
+      state.mission.objective = "Go to Rosa's café to retry the job";
+      state.mission.dialogue = "Don't worry, Dario. Come back and we'll try again.";
+      pushEv(state, {
+        type: 'missionFailed',
+        text: `Mission failed — ${why}. Talk to Rosa to retry.`,
+      });
+      api._sync(state);
     },
 
+    // The M2 target: a yellow sports car parked at the beachfront.
+    // Full contract shape via createCar (see police.js spawnCar).
+    markCar(state) {
+      if (api.markedCarId != null) {
+        const old = (state.cars || []).find((c) => c.id === api.markedCarId);
+        if (old) return old;
+      }
+      const spot = landmark(state, 'beachCar');
+      const car = createCar('sports', spot.x, spot.z, Math.PI / 2, {
+        color: 0xffd21f,
+        isParked: true,
+        driver: null,
+      });
+      car.color = 0xffd21f;
+      car.isParked = true;
+      car.driver = null;
+      if (typeof car.id !== 'number') car.id = nextCarId(state);
+      (state.cars = state.cars || []).push(car);
+      api.markedCarId = car.id;
+      return car;
+    },
+
+    // A cash bundle on a sidewalk, outside any building collider. Retries
+    // until the spot is reachable; falls back to the plaza.
     newPickup(state) {
-      // A pickup inside a building collider can never be collected (the
-      // player cannot walk through walls), so retry until the spot is
-      // reachable. Without colliders (a bare test state) take the first.
-      for (let i = 0; i < 12; i += 1) {
-        const x = (Math.random() * 2 - 1) * 170;
-        const z = (Math.random() * 2 - 1) * 170;
-        if (!state.colliders || !hitsCollider(state, x, z, 1)) {
-          return { x, z, amount: CASH_AMOUNT, taken: false, respawnT: 0 };
-        }
-      }
-      // Fallback: the market plaza is open ground, always reachable.
-      return { x: 0, z: 24, amount: CASH_AMOUNT, taken: false, respawnT: 0 };
+      const spot = api._randomSpot(state);
+      const pk = { x: spot.x, z: spot.z, amount: CONFIG.CASH_PICKUP ?? 25, taken: false, respawnT: 0 };
+      (state.pickups = state.pickups || []).push(pk);
+      return pk;
     },
 
-    taxiStep(dt, state) {
-      const taxi = this.taxi;
-      const player = state.player;
-      // Taxi jobs only once the intro is done.
-      if (this.index === 0) return;
-      if (!taxi.active) {
-        taxi.nextIn -= dt;
-        if (taxi.nextIn > 0) return;
-        taxi.nextIn = 20;
-        // Spawn a customer at a random landmark curb.
-        const spots = ['plaza', 'cafe', 'beach', 'docks'];
-        const spot = landmark(state, spots[Math.floor(Math.random() * spots.length)]);
-        if (!spot) return;
-        taxi.customer = { x: spot.x + 4, z: spot.z + 4 };
-        taxi.phase = 'wait';
-        taxi.active = true;
-        const peds = state.peds || (state.peds = []);
-        // Full ped shape (traffic.js contract): stepPed resets state to
-        // 'walk' every step and reads ped.loop[ped.loopIdx], so a
-        // customer without a loop crashes the world. The 2-point loop
-        // is a short pace at the curb while they wait.
-        peds.push({
-          id: 80000 + Math.floor(Math.random() * 1000),
-          x: taxi.customer.x, z: taxi.customer.z, angle: 0, speed: 0, hp: 100,
-          isCop: false, isTaxiCustomer: true, state: 'idle',
-          loop: [[taxi.customer.x - 2, taxi.customer.z], [taxi.customer.x + 2, taxi.customer.z]],
-          loopIdx: 1,
-          path: null,
-          pathIdx: 0,
-          flee: 0,
-          fleeT: 0,
-          fleeFrom: null,
-          color: 0x22c55e,
-          bobPhase: Math.random() * Math.PI * 2,
-        });
-        pushEvent(state, 'info', 'Taxi fare waiting — pick them up');
-      } else if (taxi.phase === 'wait') {
-        if (player.inCar && taxi.customer
-          && Math.hypot(player.x - taxi.customer.x, player.z - taxi.customer.z) < 5) {
-          // Customer gets in.
-          const peds = state.peds || [];
-          for (let i = peds.length - 1; i >= 0; i--) {
-            if (peds[i].isTaxiCustomer) peds.splice(i, 1);
+    _randomSpot(state) {
+      const plaza = landmark(state, 'plaza');
+      for (let i = 0; i < 24; i++) {
+        const tx = (Math.random() * 2 - 1) * 190;
+        const tz = (Math.random() * 2 - 1) * 190;
+        if (!inCollider(state, tx, tz, 2)) return { x: tx, z: tz };
+      }
+      return { x: plaza.x, z: plaza.z };
+    },
+
+    _pickupsStep(dt, state) {
+      const p = state.player;
+      for (const pk of state.pickups || []) {
+        if (pk.taken) {
+          pk.respawnT -= dt;
+          if (pk.respawnT <= 0) {
+            const spot = api._randomSpot(state);
+            pk.x = spot.x;
+            pk.z = spot.z;
+            pk.taken = false;
           }
-          const dests = ['garage', 'hospital', 'docks', 'plaza'];
-          const dest = landmark(state, dests[Math.floor(Math.random() * dests.length)]);
-          taxi.dest = dest;
-          taxi.phase = 'ride';
-          taxi.timer = TAXI_TIME;
-          pushEvent(state, 'info', 'Taxi: drop them off at the marker');
+          continue;
         }
-      } else if (taxi.phase === 'ride') {
-        taxi.timer -= dt;
-        if (taxi.timer <= 0) {
-          taxi.active = false;
-          taxi.phase = 'wait';
-          taxi.customer = null;
-          taxi.dest = null;
-          pushEvent(state, 'info', 'Taxi fare gave up and walked away');
+        if (distTo(p.x, p.z, pk.x, pk.z) < 2.2) {
+          pk.taken = true;
+          pk.respawnT = 25;
+          state.money = (state.money ?? 0) + pk.amount;
+          if (state.stats) {
+            state.stats.bestCash = Math.max(state.stats.bestCash ?? 0, state.money);
+          }
+          pushEv(state, { type: 'pickup', text: `Cash +$${pk.amount}` });
+          state.fxBurst = { type: 'glint', x: pk.x, y: 1.2, z: pk.z };
+        }
+      }
+    },
+
+    _clearTaxi(state) {
+      const c = (state.peds || []).find((pd) => pd.id === api.taxi.customerId);
+      if (c) c.isTaxiCustomer = false;
+      api.taxi = { phase: 'none', customerId: null, dest: null, destName: '' };
+      state.taxiMarker = null;
+    },
+
+    // Repeatable side job, free-roam only: pick up a waving pedestrian,
+    // drop them at a landmark, get paid.
+    taxiStep(dt, state) {
+      const p = state.player;
+      if (api.phase !== 'idle') {
+        if (api.taxi.phase !== 'none') api._clearTaxi(state);
+        return;
+      }
+      const t = api.taxi;
+      if (t.phase === 'none') {
+        api._taxiT -= dt;
+        if (api._taxiT <= 0) {
+          const cands = (state.peds || []).filter(
+            (pd) => !pd.isCop && !pd.isTaxiCustomer && (pd.hp ?? 100) > 0 && pd.state !== 'down',
+          );
+          if (cands.length) {
+            const c = cands[Math.floor(Math.random() * cands.length)];
+            c.isTaxiCustomer = true;
+            api.taxi = { phase: 'pickup', customerId: c.id, dest: null, destName: '' };
+            state.taxiMarker = { x: c.x, z: c.z };
+            pushEv(state, { type: 'taxi', text: 'Taxi customer waving — pick them up!' });
+            if (api._nextPending == null) {
+              state.mission.objective = 'Taxi: pick up the waving customer';
+            }
+          }
+          api._taxiT = 12 + Math.random() * 10;
+        }
+        return;
+      }
+      if (t.phase === 'pickup') {
+        const c = (state.peds || []).find((pd) => pd.id === t.customerId);
+        if (!c) {
+          api._clearTaxi(state);
           return;
         }
-        if (taxi.dest && player.inCar
-          && Math.hypot(player.x - taxi.dest.x, player.z - taxi.dest.z) < 7) {
-          state.money = (state.money || 0) + TAXI_FARE;
-          state.stats.bestCash = Math.max(state.stats.bestCash || 0, state.money);
-          pushEvent(state, 'cash', `Taxi fare +$${TAXI_FARE}`);
-          taxi.active = false;
-          taxi.phase = 'wait';
-          taxi.customer = null;
-          taxi.dest = null;
-          taxi.nextIn = 15;
+        state.taxiMarker = { x: c.x, z: c.z };
+        if (distTo(p.x, p.z, c.x, c.z) < 4) {
+          state.peds.splice(state.peds.indexOf(c), 1);
+          const dests = [
+            ['plaza', 'the plaza'],
+            ['beach', 'the beach'],
+            ['downtown', 'downtown'],
+            ['market', 'the market'],
+            ['hospital', 'the hospital'],
+            ['pier', 'the pier'],
+          ];
+          const [key, name] = dests[Math.floor(Math.random() * dests.length)];
+          const L = landmark(state, key);
+          api.taxi = { phase: 'dropoff', customerId: null, dest: { x: L.x, z: L.z }, destName: name };
+          state.taxiMarker = { x: L.x, z: L.z };
+          state.mission.objective = `Taxi: drop off at ${name}`;
+          pushEv(state, { type: 'taxi', text: `Taxi: drop them at ${name}.` });
+        } else if (distTo(p.x, p.z, c.x, c.z) > 120) {
+          pushEv(state, { type: 'taxi', text: 'Taxi customer gave up waiting.' });
+          api._clearTaxi(state);
+        }
+        return;
+      }
+      if (t.phase === 'dropoff') {
+        if (distTo(p.x, p.z, t.dest.x, t.dest.z) < 8) {
+          const fare = CONFIG.TAXI_FARE ?? 45;
+          state.money = (state.money ?? 0) + fare;
+          if (state.stats) {
+            state.stats.bestCash = Math.max(state.stats.bestCash ?? 0, state.money);
+          }
+          pushEv(state, { type: 'taxi', text: `Taxi fare +$${fare}` });
+          state.fxBurst = { type: 'glint', x: p.x, y: 1.6, z: p.z };
+          api._clearTaxi(state);
+          api._taxiT = 15 + Math.random() * 15;
+          if (api._nextPending == null) {
+            state.mission.objective = 'Free roam — taxi fares pay $45';
+          }
         }
       }
-      // Taxi marker for the minimap/HUD/renderer beacon.
-      if (taxi.active && taxi.phase === 'ride' && taxi.dest) {
-        state.taxiMarker = { x: taxi.dest.x, z: taxi.dest.z };
-      } else if (taxi.customer) {
-        state.taxiMarker = { x: taxi.customer.x, z: taxi.customer.z };
-      } else {
-        state.taxiMarker = null;
+    },
+
+    _progress(state) {
+      const p = state.player;
+      const near = (lm, r) => {
+        const L = landmark(state, lm);
+        return distTo(p.x, p.z, L.x, L.z) < r;
+      };
+      if (api.index === 0) {
+        if (near('cafe', 6)) api.complete(state);
+      } else if (api.index === 1) {
+        if (api.stepIndex === 0 && near('docks', 8)) {
+          api.stepIndex = 1;
+          api.applyStep(state);
+          pushEv(state, { type: 'mission', text: 'Package is here — grab it.' });
+        } else if (api.stepIndex === 1 && near('docks', 4)) {
+          api.stepIndex = 2;
+          api.applyStep(state);
+          pushEv(state, { type: 'pickup', text: 'Package collected — get it to Rosa!' });
+        } else if (api.stepIndex === 2 && near('cafe', 6)) {
+          api.complete(state);
+        }
+      } else if (api.index === 2) {
+        if (api.stepIndex === 0 && p.carId != null && p.carId === api.markedCarId) {
+          api.stepIndex = 1;
+          api.applyStep(state);
+          state.systems?.police?.addHeat?.(2, 'stole the marked car', state);
+          pushEv(state, { type: 'mission', text: "That's the one — now get it to the garage!" });
+        } else if (api.stepIndex === 1 && p.carId === api.markedCarId && near('garage', 8)) {
+          api.complete(state);
+        }
+      } else if (api.index === 3) {
+        if (near('safehouse', 8)) api.complete(state);
       }
+    },
+
+    step(dt, state) {
+      if (!state || state.screen === 'title' || state.screen === 'paused') return;
+      const p = state.player;
+      if (!p) return;
+      if (!api.pickupsSpawned) {
+        api.pickupsSpawned = true;
+        state.pickups = state.pickups || [];
+        while (state.pickups.length < 5) api.newPickup(state);
+      }
+      api._pickupsStep(dt, state);
+      api.taxiStep(dt, state);
+      // Auto-start the intro mission on a fresh game.
+      if (api.phase === 'idle' && api.index === 0 && !api._m0Started && api._nextPending == null) {
+        api.start(0, state);
+        return;
+      }
+      if (api.phase === 'active') {
+        if (api.timer > 0) {
+          api.timer -= dt;
+          if (api.timer <= 0) {
+            api.timer = 0;
+            api.fail(state, 'time ran out');
+            api._sync(state);
+            return;
+          }
+        }
+        api._progress(state);
+      } else if (api.phase === 'idle' && api._nextPending != null) {
+        // Café trigger: works for the next job after ANY mission, not just M0.
+        const cafe = landmark(state, 'cafe');
+        if (distTo(p.x, p.z, cafe.x, cafe.z) < 6) api.start(api._nextPending, state);
+      }
+      api._sync(state);
+    },
+
+    _sync(state) {
+      state.mission = state.mission || {};
+      state.mission.index = api.index;
+      state.mission.phase = api.phase;
+      state.mission.step = api.stepIndex;
+      state.mission.timer = Math.max(0, api.timer);
     },
 
     objectiveText(state) {
-      const m = state.mission || {};
-      const marker = m.marker || state.taxiMarker || null;
-      const dist = marker && state.player
-        ? Math.round(Math.hypot(state.player.x - marker.x, state.player.z - marker.z)) : null;
-      return { text: m.objective || '', distance: dist, marker };
+      return (state.mission && state.mission.objective) || 'Explore Solmar Bay';
     },
   };
-  return missions;
-}
-
-function landmark(state, name) {
-  if (!name) return null;
-  if (state.landmarks && state.landmarks[name]) return state.landmarks[name];
-  if (state.spawnPoints && state.spawnPoints[name]) return state.spawnPoints[name];
-  return null;
-}
-
-function pushEvent(state, type, text) {
-  if (!state.events) state.events = [];
-  if (state.events.length > 24) state.events.shift();
-  state.events.push({ type, text, t: state.time || 0 });
+  return api;
 }

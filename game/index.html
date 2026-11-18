@@ -1,176 +1,204 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar Bay — an open-world crime story</title>
+<title>Solmar Bay — Open-World Crime</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1210; font-family: 'Segoe UI', system-ui, sans-serif; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  :root {
+    --gold: #ffd23d;
+    --ink: #0e0d0b;
+    --panel: rgba(12, 11, 10, 0.72);
+    --line: rgba(255, 255, 255, 0.22);
+    --text: #f5f1e8;
+    --muted: #b9b2a4;
+    --red: #ff3b30;
+    --blue: #3d8fff;
+    --green: #37d67a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #101418; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    color: var(--text);
+    -webkit-user-select: none; user-select: none;
+  }
+  #game-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
   .hidden { display: none !important; }
-  /* ---- HUD (reference layout: mission + police top-left, cash/stars/
-     clock top-right, round minimap + bars bottom-left, dialogue card
-     bottom-centre, big speed bottom-right) ---- */
-  #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); z-index: 5; }
-  .panel { background: rgba(12,8,20,.62); border: 1px solid rgba(255,255,255,.22); border-radius: 10px; padding: 10px 14px; }
-  #hud-top-left { position: absolute; top: 14px; left: 16px; width: 330px; }
-  #mission-panel { margin-bottom: 8px; }
-  #mission-title { font-size: 15px; font-weight: 800; letter-spacing: 1px; color: #ffd23d; }
-  #mission-title .m-id { background: #ff7a1a; color: #fff; border-radius: 4px; padding: 1px 6px; margin-right: 6px; font-size: 12px; }
-  #objective-line { font-size: 16px; font-weight: 600; margin-top: 4px; }
-  #objective-dist { color: #ffd23d; font-weight: 700; }
-  #mission-timer { color: #ff8a7a; font-weight: 700; }
-  #stage-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
-  #stage-label { font-size: 12px; font-weight: 700; letter-spacing: 1px; color: #7dff9e; white-space: nowrap; }
-  #stage-bar { flex: 1; height: 8px; background: rgba(0,0,0,.55); border-radius: 4px; overflow: hidden; }
-  #stage-fill { height: 100%; width: 0%; background: #39ff88; transition: width .2s; }
-  #mission-next { font-size: 13px; margin-top: 6px; opacity: .95; }
-  #mission-next b { color: #ffd23d; }
-  #police-panel { border-color: rgba(255,60,60,.45); }
-  #police-panel h3 { margin: 0 0 6px; font-size: 13px; letter-spacing: 1px; color: #ff8a7a; }
-  .police-row { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; font-weight: 600; padding: 2px 0; }
-  .police-row .police-dist { color: #ffd23d; }
-  .police-row .police-status { color: #ff5a4d; }
-  .police-row .police-status.spot { color: #7dff9e; }
-  #hud-top-right { position: absolute; top: 14px; right: 16px; text-align: right; }
-  #cash { font-size: 34px; font-weight: 800; color: #7dff9e; letter-spacing: 1px; line-height: 1; }
-  #stars { font-size: 24px; letter-spacing: 4px; color: #ffd23d; margin-top: 4px; }
-  #stars.flashing { animation: starflash .5s steps(2) infinite; }
-  @keyframes starflash { 50% { opacity: .35; } }
-  #clock { font-size: 20px; font-weight: 600; margin-top: 2px; }
-  #insight-badge { display: inline-block; margin-top: 6px; background: #d21f2b; color: #fff; font-weight: 800; font-size: 13px; letter-spacing: 1px; padding: 3px 10px; border-radius: 5px; }
-  #weapon-slots { margin-top: 8px; display: flex; gap: 6px; justify-content: flex-end; }
-  .wslot { background: rgba(12,8,20,.62); border: 1px solid rgba(255,255,255,.22); border-radius: 6px; padding: 4px 9px; font-size: 13px; font-weight: 700; }
-  .wslot.active { border-color: #ffd23d; color: #ffd23d; }
-  .wslot.hot { border-color: #ff7a1a; color: #ff7a1a; background: rgba(255,122,26,.18); }
-  .wslot .ammo { opacity: .8; font-weight: 600; }
-  #hud-bottom-left { position: absolute; left: 16px; bottom: 16px; width: 200px; }
-  #minimap { width: 160px; height: 160px; border: 2px solid rgba(255,255,255,.4); border-radius: 50%; background: #0e1420; display: block; }
-  #loc-name { font-size: 17px; font-weight: 800; letter-spacing: 1px; margin-top: 8px; }
-  #loc-street { font-size: 13px; opacity: .85; }
-  .bar-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; font-weight: 700; }
-  .bar-row .bar-label { width: 52px; letter-spacing: 1px; }
-  .bar { flex: 1; height: 10px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.35); border-radius: 5px; overflow: hidden; }
-  .bar > div { height: 100%; transition: width .15s; }
-  #health-fill { background: #39ff88; }
-  #rep-fill { background: #ffd23d; }
-  #armour-fill { background: #4da3ff; }
-  .bar-num { width: 34px; text-align: right; }
-  .rep-num { width: 86px; }
-  #hud-bottom-right { position: absolute; right: 16px; bottom: 16px; text-align: right; }
-  #speed { font-size: 64px; font-weight: 800; line-height: .9; }
-  #speed-unit { font-size: 15px; font-weight: 700; opacity: .85; }
-  #gear { font-size: 13px; font-weight: 800; letter-spacing: 1px; color: #ff9a7a; margin-left: 6px; }
-  #car-name { font-size: 17px; font-weight: 800; color: #7ab8ff; letter-spacing: 1px; margin-top: 2px; }
-  #cond-row { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 5px; font-size: 12px; font-weight: 700; }
-  #cond-bar { width: 150px; height: 9px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.35); border-radius: 5px; overflow: hidden; }
-  #cond-fill { height: 100%; width: 100%; background: #39ff88; }
-  #radio-name { font-size: 13px; color: #ff9a7a; margin-top: 5px; font-weight: 600; }
-  #dialogue { position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px; max-width: 620px; display: flex; gap: 12px; align-items: center; background: rgba(12,8,20,.72); border: 1px solid rgba(255,255,255,.25); border-radius: 10px; padding: 10px 16px; }
-  .dlg-portrait { flex: none; width: 52px; height: 52px; border-radius: 50%; background: linear-gradient(135deg, #ff7a1a, #ff2d78); display: flex; align-items: center; justify-content: center; font-size: 19px; font-weight: 800; color: #fff; border: 2px solid rgba(255,255,255,.5); }
-  .dlg-name { font-size: 14px; font-weight: 800; letter-spacing: 1px; color: #ffd23d; }
-  .dlg-role { font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #ff9a7a; margin-top: 1px; }
-  #dialogue-text { font-size: 15px; font-style: italic; margin-top: 2px; }
-  #hint { position: absolute; left: 50%; transform: translateX(-50%); bottom: 150px; font-size: 13px; opacity: .85; background: rgba(0,0,0,.45); padding: 5px 12px; border-radius: 6px; }
-  #feed { position: absolute; left: 50%; transform: translateX(-50%); top: 14px; width: 340px; }
-  .feed-msg { font-size: 14px; background: rgba(0,0,0,.5); padding: 4px 10px; border-radius: 5px; margin-bottom: 4px; transition: opacity .6s; text-align: center; }
-  .feed-good { color: #7dff9e; }
-  .feed-bad { color: #ff8a7a; }
-  .feed-fade { opacity: 0; }
-  /* ---- Full-screen overlays ---- */
-  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 6; box-shadow: inset 0 0 90px 40px rgba(255,0,0,.55); }
-  #flash { position: fixed; inset: 0; pointer-events: none; z-index: 7; background: #ff2020; opacity: 0; transition: opacity .12s; }
-  .screen { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: #fff; background: rgba(10,6,4,.72); }
-  .screen h1 { font-size: 64px; margin: 0; letter-spacing: 6px; color: #ffd23d; text-shadow: 0 4px 24px rgba(0,0,0,.9); }
-  .screen h2 { font-size: 22px; font-weight: 400; margin: 10px 0 0; opacity: .9; }
-  .screen p { font-size: 15px; max-width: 560px; line-height: 1.6; opacity: .9; }
-  .screen button { pointer-events: auto; margin-top: 22px; font-size: 20px; font-weight: 700; letter-spacing: 2px; padding: 14px 42px; border: none; border-radius: 8px; background: #ffd23d; color: #1a1210; cursor: pointer; }
-  .screen button:hover { background: #ffe27a; }
-  .screen .keys { font-size: 13px; opacity: .75; margin-top: 26px; line-height: 1.9; }
-  #busted-screen { background: rgba(10,20,60,.78); }
-  #busted-screen h1 { color: #7ab8ff; }
-  #wasted-screen { background: rgba(40,0,0,.8); }
-  #wasted-screen h1 { color: #ff5a4d; }
+
+  /* ---------- HUD ---------- */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 12px;
+    backdrop-filter: blur(3px);
+  }
+  #hud-topleft { position: absolute; top: 14px; left: 14px; display: flex; flex-direction: column; gap: 6px; }
+  #cash { font-size: 28px; font-weight: 800; color: var(--gold); letter-spacing: 0.5px; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
+  #stars { font-size: 22px; letter-spacing: 3px; color: #5a5348; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
+  #stars.none { opacity: 0.45; }
+  #stars.hot { color: var(--gold); animation: starflash 0.5s steps(2) infinite; }
+  @keyframes starflash { 50% { opacity: 0.45; } }
+
+  #hud-topright { position: absolute; top: 14px; right: 14px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  #minimap { width: 160px; height: 160px; border-radius: 8px; border: 1px solid var(--line); background: #26221e; box-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+  #clock { font-size: 18px; font-weight: 700; }
+
+  #hud-bottomleft { position: absolute; left: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 6px; min-width: 230px; }
+  #health-row { display: flex; align-items: center; gap: 8px; }
+  #health-label { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: 1px; }
+  #health-bar { flex: 1; height: 12px; border-radius: 6px; background: rgba(255,255,255,0.14); overflow: hidden; border: 1px solid var(--line); }
+  #health-fill { height: 100%; width: 100%; background: var(--green); border-radius: 6px; transition: width 0.15s; }
+  #health-fill.low { background: var(--red); }
+  #health-num { font-size: 13px; font-weight: 700; min-width: 26px; text-align: right; }
+  #weapon-row { font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }
+  #weapon-row .ammo { color: var(--gold); }
+  #weapon-row .res { color: var(--muted); font-weight: 600; }
+
+  #hud-bottomcenter { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); text-align: center; max-width: 46vw; }
+  #objective { font-size: 16px; font-weight: 700; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
+  #obj-meta { font-size: 13px; color: var(--gold); font-weight: 700; margin-top: 2px; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
+  #obj-meta span + span::before { content: " · "; color: var(--muted); }
+  #dialogue { margin-top: 8px; display: inline-block; }
+  #dialogue-text { font-size: 14px; font-style: italic; color: #ffd9a0; }
+
+  #hud-bottomright { position: absolute; right: 14px; bottom: 14px; text-align: right; }
+  #speed { font-size: 30px; font-weight: 800; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
+  #speed small { font-size: 13px; color: var(--muted); font-weight: 600; }
+
+  #feed { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; width: 520px; max-width: 60vw; }
+  .feed-item {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 5px 12px; font-size: 14px; font-weight: 600; text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  .feed-wanted, .feed-busted, .feed-wasted, .feed-missionFailed { border-color: var(--red); color: #ffb3ad; }
+  .feed-missionComplete, .feed-taxi, .feed-pickup { border-color: var(--gold); color: #ffe9a8; }
+
+  #hint-bar {
+    position: absolute; bottom: 64px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: var(--muted); background: rgba(12,11,10,0.55);
+    padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+  }
+  #hint-bar b { color: var(--text); }
+
+  #damage-flash {
+    position: fixed; inset: 0; pointer-events: none; z-index: 6;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(255,30,20,0.55) 100%);
+    opacity: 0;
+  }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 4;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(255,0,0,0.35) 100%);
+  }
+
+  /* ---------- Screens ---------- */
+  .screen {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; background: rgba(8, 8, 12, 0.55);
+  }
+  .logo { font-size: 72px; font-weight: 900; letter-spacing: 6px; color: var(--gold); text-shadow: 0 4px 0 #b8860b, 0 8px 24px rgba(0,0,0,0.8); }
+  .logo-sub { font-size: 16px; letter-spacing: 8px; color: var(--text); margin-top: 2px; text-transform: uppercase; }
+  .blurb { max-width: 520px; margin: 18px 0 6px; font-size: 15px; line-height: 1.5; color: #e8e2d4; }
+  #title-stats { margin-top: 10px; font-size: 13px; color: var(--gold); font-weight: 700; }
+  .btn {
+    pointer-events: auto; cursor: pointer; margin-top: 14px;
+    font-size: 17px; font-weight: 800; letter-spacing: 1px;
+    color: var(--ink); background: var(--gold); border: none; border-radius: 8px;
+    padding: 12px 34px; box-shadow: 0 4px 0 #b8860b, 0 8px 18px rgba(0,0,0,0.5);
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn:active { transform: translateY(2px); box-shadow: 0 2px 0 #b8860b; }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); box-shadow: none; font-weight: 600; }
+  .controls { margin-top: 22px; font-size: 13px; line-height: 1.9; color: var(--muted); }
+  .controls b { color: var(--text); }
+  .big-word { font-size: 64px; font-weight: 900; letter-spacing: 6px; text-shadow: 0 6px 24px rgba(0,0,0,0.8); }
+  #busted-screen .big-word { color: var(--blue); }
+  #wasted-screen .big-word { color: var(--red); }
+  .screen .sub { margin-top: 8px; font-size: 16px; color: #e8e2d4; }
+  .screen h2 { font-size: 34px; letter-spacing: 4px; }
+  #status { position: fixed; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Solmar Bay: an open-world crime story. Drive, steal cars, outrun the police and run jobs for Mama Rosa."></canvas>
-<p id="status" role="status" aria-live="polite"></p>
+<canvas id="game-canvas" width="1280" height="720"></canvas>
 
-<div id="hud" class="hidden">
-  <div id="hud-top-left">
-    <div id="mission-panel" class="panel">
-      <div id="mission-title"></div>
-      <div id="objective-line"><span id="objective"></span><span id="objective-dist"></span><span id="mission-timer"></span></div>
-      <div id="stage-row"><span id="stage-label"></span><div id="stage-bar"><div id="stage-fill"></div></div></div>
-      <div id="mission-next"></div>
-    </div>
-    <div id="police-panel" class="panel hidden">
-      <h3 id="police-title">MBPD RESPONSE</h3>
-      <div id="police-list"></div>
-    </div>
+<div id="hud">
+  <div id="hud-topleft">
+    <div id="cash">$150</div>
+    <div id="stars" class="none">☆☆☆☆☆</div>
   </div>
-  <div id="hud-top-right">
-    <div id="cash">$0</div>
-    <div id="stars" class="hidden">☆☆☆☆☆</div>
-    <div id="clock">17:40</div>
-    <div id="insight-badge" class="hidden">IN SIGHT</div>
-    <div id="weapon-slots"></div>
-  </div>
-  <div id="feed"></div>
-  <div id="dialogue" class="hidden">
-    <div class="dlg-portrait" id="dlg-portrait">MR</div>
-    <div><div class="dlg-name" id="dlg-name">MAMA ROSA</div><div class="dlg-role hidden" id="dlg-role"></div><div id="dialogue-text"></div></div>
-  </div>
-  <div id="hud-bottom-left">
+
+  <div id="hud-topright">
     <canvas id="minimap" width="160" height="160"></canvas>
-    <div id="loc-name">CORAL SHORE</div>
-    <div id="loc-street">Paloma Boulevard</div>
-    <div class="bar-row"><span class="bar-label">HEALTH</span><div class="bar"><div id="health-fill"></div></div><span class="bar-num" id="health-num">100</span></div>
-    <div class="bar-row"><span class="bar-label" id="rep-label">REP</span><div class="bar"><div id="rep-fill"></div></div><span class="bar-num rep-num" id="rep-num">STREET RAT</span></div>
-    <div class="bar-row hidden" id="armour-row"><span class="bar-label">ARMOUR</span><div class="bar"><div id="armour-fill"></div></div><span class="bar-num" id="armour-num">100</span></div>
+    <div id="clock" class="panel">17:40</div>
   </div>
-  <div id="hud-bottom-right">
-    <div><span id="speed">0</span> <span id="speed-unit">KM/H</span> <span id="gear" class="hidden"></span></div>
-    <div id="car-name">ON FOOT</div>
-    <div id="cond-row"><span>CONDITION</span><div id="cond-bar"><div id="cond-fill"></div></div><span class="bar-num" id="cond-num">100%</span></div>
-    <div id="radio-name">♪ Wave 104 · Sunset Synth</div>
+
+  <div id="feed"></div>
+
+  <div id="hud-bottomleft">
+    <div id="health-row">
+      <span id="health-label">HP</span>
+      <div id="health-bar"><div id="health-fill"></div></div>
+      <span id="health-num">100</span>
+    </div>
+    <div id="weapon-row" class="panel"><span id="weapon">FISTS</span> · <span class="ammo" id="ammo">0</span> / <span class="res" id="ammo-res">0</span></div>
   </div>
-  <div id="hint" class="hidden">WASD drive / walk · SHIFT sprint / handbrake · E enter car · F punch · Click shoot · R reload · H honk · M mute · Esc pause</div>
+
+  <div id="hud-bottomcenter">
+    <div id="objective">Explore Solmar Bay</div>
+    <div id="obj-meta"><span id="obj-dist"></span><span id="obj-timer"></span></div>
+    <div id="dialogue" class="panel hidden"><span id="dialogue-text"></span></div>
+  </div>
+
+  <div id="hud-bottomright">
+    <div id="speed">0 <small>km/h</small></div>
+  </div>
+
+  <div id="hint-bar"><b>WASD</b> move / drive · <b>Shift</b> run / handbrake · <b>E</b> enter car · <b>F</b> punch · <b>Click</b> shoot · <b>R</b> reload · <b>H</b> honk · <b>1/2</b> weapon · <b>M</b> mute · <b>Esc</b> pause</div>
 </div>
 
+<div id="damage-flash"></div>
 <div id="vignette" class="hidden"></div>
-<div id="flash"></div>
 
 <div id="title-screen" class="screen">
-  <h1>SOLMAR BAY</h1>
-  <h2>An open-world crime story — Dario "D" Cruz is back in town.</h2>
-  <p>Mama Rosa has work for you. Drive the beachfront, steal what you need,
-  lose the SBPD, and run three jobs before the sun sets. All content is original —
-  no real places, no real people, no Rockstar assets.</p>
-  <button id="start-btn">START</button>
+  <div class="logo">SOLMAR BAY</div>
+  <div class="logo-sub">An open-world crime story</div>
+  <p class="blurb">Dario Cruz owes money to the wrong people. Steal cars, dodge the
+  SBPD, run jobs for Mama Rosa — and make it out rich.</p>
   <div id="title-stats"></div>
-  <div class="keys">WASD move / drive · SHIFT sprint / handbrake · E enter &amp; exit car · F punch · Click shoot · R reload · H honk · M mute · Esc pause<br>
-  Best played with keyboard + mouse. Sound on for the full golden-hour mood.</div>
+  <button id="start-btn" class="btn">START GAME</button>
+  <button id="continue-btn" class="btn ghost">CONTINUE</button>
+  <div class="controls">
+    <b>WASD</b> move / drive &nbsp;·&nbsp; <b>Shift</b> run / handbrake &nbsp;·&nbsp; <b>Mouse</b> look (click to lock)<br>
+    <b>E</b> enter / steal car &nbsp;·&nbsp; <b>F</b> punch &nbsp;·&nbsp; <b>Click</b> shoot &nbsp;·&nbsp; <b>R</b> reload &nbsp;·&nbsp; <b>1 / 2</b> weapon<br>
+    <b>H</b> honk &nbsp;·&nbsp; <b>M</b> mute &nbsp;·&nbsp; <b>Esc / P</b> pause &nbsp;·&nbsp; <b>Enter</b> confirm
+  </div>
 </div>
 
 <div id="pause-screen" class="screen hidden">
-  <h1>PAUSED</h1>
-  <p id="pause-stats"></p>
-  <button id="resume-btn">RESUME</button>
+  <h2>PAUSED</h2>
+  <p class="sub">Take a breath, Dario. The city waits.</p>
+  <button id="resume-btn" class="btn">RESUME</button>
+  <button id="restart-btn" class="btn ghost">RESTART</button>
+  <button id="mute-btn" class="btn ghost">Mute (M)</button>
+  <button id="quit-btn" class="btn ghost">SAVE + QUIT TO TITLE</button>
 </div>
 
 <div id="busted-screen" class="screen hidden">
-  <h1>BUSTED</h1>
-  <p id="busted-text">The SBPD caught you. $200 fine, and the job is blown.</p>
+  <div class="big-word">BUSTED</div>
+  <p class="sub">The SBPD got you. Fine paid — back to the precinct.</p>
 </div>
 
 <div id="wasted-screen" class="screen hidden">
-  <h1>WASTED</h1>
-  <p id="wasted-text">You went down. The hospital patched you up — $100.</p>
+  <div class="big-word">WASTED</div>
+  <p class="sub">You wake up at the hospital, $100 lighter.</p>
 </div>
+
+<div id="status" aria-live="polite"></div>
 
 <script type="importmap">
 { "imports": { "three": "./vendor/three/three.module.min.js" } }

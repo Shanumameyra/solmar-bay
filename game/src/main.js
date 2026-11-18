@@ -1,19 +1,13 @@
-// Solmar Bay — boot + the one loop (Worker B). Input is read every frame, the
-// world advances in fixed 1/60 s steps (several in a slow frame, none in a fast
-// one), and the renderer paints what is there. Screens: title, play, paused,
-// busted, wasted. ?seed=N fixes the layout; ?shot=hero stages the one hero shot.
-// (with &seed=N) stages that scene instead of running the loop, paints it
-// twice and sets window.__shotReady for a screenshot.
+// main.js — boot + fixed-step loop + screens + shot staging.
 //
-// Input: createInput(canvas) returns the input object directly (listeners
-// attach immediately); endFrame() clears dx/dy/justPressed after each fixed
-// step. The title screen steps the world with an idle input so the city stays
-// alive behind the menu. Events: world.step does NOT clear state.events per
-// step, so main.js drains them once per frame (sfx -> audio, fxBurst ->
-// effects, mission-complete -> save); hud.js then drains the rest for the
-// feed. Police bust and combat death set state.screen; main.js turns that
-// into the busted/wasted screen + 2.5 s timer. window.__GTA is the
-// diagnostics + playtest hook.
+// Fixed step 1/60 with an accumulator (MAX_FRAME 0.25). Title steps the
+// world with an idle input (a living city behind the menu). Events from
+// world.step are drained once per frame: main reads a COPY for SFX / FX /
+// save triggers, then hud.update shifts them out into the feed.
+// Busted/wasted screens run a 2.5 s timer, then play resumes at the
+// respawn point (bust()/die() already moved the player there).
+// ?shot=name stages a screenshot (draw twice, then window.__shotReady).
+
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { createWorld } from './world.js';
@@ -25,295 +19,326 @@ import { createCombat } from './combat.js';
 import { createHud } from './hud.js';
 import { createMinimap } from './minimap.js';
 import { createAudio } from './audio.js';
+import { loadSave, saveGame, applySave } from './save.js';
 import { createEffects } from './effects.js';
-import { loadSave, applySave, saveGame, hasSave } from './save.js';
 import { stageShot } from './shots.js';
 
-const STEP = CONFIG.STEP;
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = CONFIG.MAX_FRAME;
-const SAVE_EVERY = 30; // seconds between autosaves
+const STEP = CONFIG.STEP ?? 1 / 60;
+const MAX_FRAME = CONFIG.MAX_FRAME ?? 0.25;
 
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : 7;
+function idleInput() {
+  return {
+    keys: new Set(),
+    dx: 0,
+    dy: 0,
+    justPressed: new Set(),
+    pointerLocked: false,
+    endFrame() {},
+  };
+}
 
-const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const minimapCanvas = document.getElementById('minimap');
-const startBtn = document.getElementById('start-btn');
-const resumeBtn = document.getElementById('resume-btn');
+export function buildGame() {
+  const params = new URLSearchParams(window.location.search);
+  const seed = parseInt(params.get('seed') || '7', 10) || 7;
+  const shot = params.get('shot');
 
-// Idle input for the title screen (the city steps, the player does not move).
-const IDLE_INPUT = {
-  keys: new Set(),
-  dx: 0,
-  dy: 0,
-  justPressed: new Set(),
-  pointerLocked: false,
-};
-
-function buildGame() {
+  const canvas = document.getElementById('game-canvas');
   const world = createWorld(seed);
   const state = world.state;
+
   const renderer = createRenderer(canvas);
-  // Add the city (ground, sea, buildings, lights, signs, pier) to the
-  // scene — without this the world is an empty gradient: only the cars,
-  // peds and player render, and the ground is the sky background.
+  // THE one line the whole city depends on: without it the ground,
+  // streets, buildings, palms, port and pier never render.
   renderer.buildScene(world.city);
+
   const input = createInput(canvas);
+  const police = createPolice();
+  const missions = createMissions();
+  const combat = createCombat();
   const audio = createAudio();
   const effects = createEffects(renderer.scene, THREE);
   const hud = createHud(document);
-  const minimap = createMinimap(minimapCanvas);
-  const systems = {
-    police: createPolice(),
-    missions: createMissions(),
-    combat: createCombat(),
+  const minimap = createMinimap(document.getElementById('minimap'));
+  const systems = { police, missions, combat, audio, effects };
+
+  // Load a save (if any) before the first frame.
+  const loaded = loadSave();
+  if (loaded.ok) {
+    applySave(state, loaded.data);
+    missions.loadIndex(loaded.data.missionIndex);
+    audio.setMuted(!!loaded.data.muted);
+    state.muted = !!loaded.data.muted;
+  }
+  const continueBtn = document.getElementById('continue-btn');
+  if (continueBtn) continueBtn.style.display = loaded.ok ? '' : 'none';
+
+  state.screen = 'title';
+  state.screenT = 0;
+
+  const ctx = {
+    world,
+    state,
+    renderer,
+    input,
+    systems,
+    police,
+    missions,
+    combat,
+    audio,
+    effects,
+    hud,
+    minimap,
+    seed,
+    shot,
+    lastSaveAt: 0,
+    autoSaveT: 0,
   };
-  return { world, state, renderer, input, audio, effects, hud, minimap, systems };
-}
 
-function runShot(name) {
-  const g = buildGame();
-  const { world, state, renderer, hud, minimap, systems, effects } = g;
-  const info = stageShot(name, world, systems);
-  // The staged shot decides its screen: 'title' shows the title overlay
-  // over the live city, everything else plays with the HUD.
-  const screen = (info && info.screen) || 'play';
-  // Shot mode has no first-run controls hint: the staged frame is the
-  // finished screenshot, not a tutorial.
-  hud.hintT = 99;
-  renderer.snapCamera();
-  // Draw twice so particles / HUD settle, then signal the screenshot runner.
-  let painted = 0;
-  function paint() {
-    // Shot mode has no game loop, so a burst staged by stageShot (e.g.
-    // the hero shot's dust puff) would never fire — drain it here on the
-    // first paint, and advance it ~0.35 s on the second so it reads as a
-    // cloud, not a point cluster, at screenshot time.
-    if (painted === 0 && state.fxBurst && effects) {
-      const b = state.fxBurst;
-      effects.burst(b.type, b.x, b.y ?? 1, b.z, b);
-      state.fxBurst = null;
-    }
-    if (painted === 1 && effects) effects.update(0.35);
-    renderer.draw(state, effects);
-    effects.applyCamera(renderer.camera, 1 / 60);
-    hud.update(state, screen, 0);
-    minimap.draw(state);
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else {
-      window.__GTA = {
-        shotReady: true,
-        shot: name,
-        screen,
-        wanted: state.wanted || 0,
-        money: state.money || 0,
-        mission: (state.mission && state.mission.objective) || '',
-        policeCars: (state.cars || []).filter((c) => c.isPolice).length,
-        info,
-        state,
-      };
-      window.__shotReady = true;
-    }
-  }
-  requestAnimationFrame(paint);
-}
-
-function runGame() {
-  const g = buildGame();
-  const { world, state, renderer, input, audio, effects, hud, minimap, systems } = g;
-  let screen = 'title';
-  let accumulator = 0;
-  let last = performance.now();
-  let saveT = 0;
-  let frames = 0;
-  let fpsT = 0;
-  let fps = 0;
-  let endTimer = 0;
-
-  // Restore a save, if one exists (loadSave returns {ok, data}).
-  const res = loadSave();
-  if (res.ok) {
-    const saved = res.data;
-    applySave(state, saved);
-    systems.missions.loadIndex(saved.missionIndex);
-    if (saved.muted) audio.setMuted(true);
-    if (startBtn) startBtn.textContent = 'CONTINUE — $' + Math.floor(state.money || 0);
-  }
-
-  function announce(message) {
-    if (status) status.textContent = message;
-  }
-
-  function doSave() {
-    state.muted = audio.muted;
-    saveGame(state);
-  }
+  window.__GTA = {
+    shotReady: false,
+    screen: state.screen,
+    wanted: state.wanted,
+    money: state.money,
+    mission: state.mission?.index ?? 0,
+    speed: 0,
+    health: state.player?.hp ?? 100,
+    debug: {
+      teleport: (x, z, angle, car) => world.teleport(x, z, angle, car),
+      addHeat: (n, reason) => world.addHeat(n, reason),
+      startMission: (i) => missions.start(i, state),
+      damagePlayer: (n) => world.damagePlayer(n),
+    },
+  };
 
   function startGame() {
-    if (screen === 'title' && !hasSave()) {
-      // Fresh start: reset the systems (the world is already fresh).
-      systems.police.reset();
-      systems.missions.reset();
-      systems.combat.reset();
-    }
+    if (state.screen !== 'title') return;
     audio.init();
-    screen = 'play';
-    announce("Playing. Follow the objective — head to Rosa's café.");
+    state.screen = 'play';
+    if (missions.index === 0 && missions.phase === 'idle') missions.start(0, state);
+    pushStatus('Playing Solmar Bay.');
   }
 
-  function handleActions() {
-    const jp = input.justPressed;
-    if (jp.has('Enter') || jp.has('Space')) {
-      if (screen === 'title') startGame();
-      else if (screen === 'busted' || screen === 'wasted') endTimer = 0;
-    }
-    if (jp.has('Escape') || jp.has('KeyP')) {
-      if (screen === 'play') {
-        screen = 'paused';
-        announce('Paused.');
-        doSave();
-      } else if (screen === 'paused') {
-        screen = 'play';
-        announce('Playing.');
+  function pauseGame() {
+    if (state.screen !== 'play') return;
+    state.screen = 'paused';
+    saveGame(state);
+    audio.stopAll();
+    pushStatus('Paused.');
+  }
+
+  function resumeGame() {
+    if (state.screen !== 'paused') return;
+    state.screen = 'play';
+    pushStatus('Playing Solmar Bay.');
+  }
+
+  function restartGame() {
+    world.reset();
+    police.reset();
+    missions.reset();
+    combat.reset();
+    state.screen = 'play';
+    missions.start(0, state);
+    pushStatus('Playing Solmar Bay.');
+  }
+
+  function quitToTitle() {
+    saveGame(state);
+    audio.stopAll();
+    state.screen = 'title';
+    pushStatus('Solmar Bay — title screen. Press Enter to start.');
+  }
+
+  function pushStatus(text) {
+    const el = document.getElementById('status');
+    if (el) el.textContent = text;
+  }
+
+  function toggleMute() {
+    audio.setMuted(!audio.muted);
+    state.muted = audio.muted;
+    const btn = document.getElementById('mute-btn');
+    if (btn) btn.textContent = audio.muted ? 'Unmute (M)' : 'Mute (M)';
+  }
+
+  // Buttons (guarded — the page may not have all of them).
+  const on = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', fn);
+  };
+  on('start-btn', startGame);
+  on('continue-btn', startGame);
+  on('resume-btn', resumeGame);
+  on('restart-btn', restartGame);
+  on('quit-btn', quitToTitle);
+  on('mute-btn', toggleMute);
+
+  // Audio starts only after a user gesture (autoplay policy).
+  window.addEventListener('pointerdown', () => audio.init(), { once: true });
+  window.addEventListener('keydown', () => audio.init(), { once: true });
+  window.addEventListener('resize', () => renderer.resize && renderer.resize());
+
+  // Hidden tab pauses the game.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && state.screen === 'play') pauseGame();
+  });
+
+  // Drain one frame of transient events: SFX / FX / save triggers.
+  // Reads a COPY — hud.update shifts the real queue out afterwards.
+  function drainEvents() {
+    for (const ev of [...(state.events || [])]) {
+      const p = state.player || {};
+      switch (ev.type) {
+        case 'sfx':
+          audio.sfx(ev.name);
+          break;
+        case 'missionComplete':
+          audio.sfx('jingle');
+          saveGame(state);
+          break;
+        case 'busted':
+        case 'wasted':
+          audio.sfx('busted');
+          saveGame(state);
+          break;
+        case 'missionFailed':
+          audio.sfx('busted');
+          break;
+        case 'gunshot':
+          audio.sfx('gunshot');
+          effects.feedback('shot', p.x, 1.4, p.z);
+          break;
+        case 'pickup':
+        case 'taxi':
+        case 'heal':
+        case 'ammo':
+          audio.sfx('pickup');
+          break;
+        case 'damage':
+          effects.addTrauma(0.35);
+          break;
+        case 'carDamage':
+          effects.addTrauma(0.25);
+          break;
+        default:
+          break;
       }
     }
-    if (jp.has('KeyM')) {
-      audio.setMuted(!audio.muted);
-      hud.showMessage(audio.muted ? 'Sound muted' : 'Sound on', '');
-    }
-  }
-
-  // Play sound + particle events queued by the systems this frame.
-  // Called BEFORE hud.update, so hud can drain the rest for the feed.
-  function drainFxEvents() {
-    const evts = state.events || [];
-    for (const e of evts) {
-      if (e.type === 'sfx' && audio) audio.sfx(e.name || e.text);
-      else if (e.type === 'mission-complete') doSave();
-    }
-    if (state.fxBurst && effects) {
+    if (state.fxBurst) {
       const b = state.fxBurst;
-      effects.burst(b.type, b.x, b.y ?? 1, b.z, b);
       state.fxBurst = null;
+      effects.burst(b.type, b.x, b.y ?? 1, b.z);
     }
-    if (state.shakeTrauma > 0 && effects) {
+    if (state.shakeTrauma) {
       effects.addTrauma(state.shakeTrauma);
       state.shakeTrauma = 0;
     }
   }
 
-  function stepWorld(dt) {
-    // Title screen: the city stays alive behind the menu (no input).
-    const inp = screen === 'play' ? input : IDLE_INPUT;
-    world.step(STEP, inp, systems);
-    // Screen transitions from systems.
-    if (state.screen === 'busted' && screen === 'play') {
-      state.screen = 'play';
-      screen = 'busted';
-      endTimer = 2.5;
-      announce(`Busted by the SBPD. $${CONFIG.WANTED.BUST_FINE} fine.`);
-      doSave();
-    } else if (state.screen === 'wasted' && screen === 'play') {
-      state.screen = 'play';
-      screen = 'wasted';
-      endTimer = 2.5;
-      announce(`Wasted. $${CONFIG.COMBAT.DEATH_FINE} hospital bill.`);
-      doSave();
+  function paint(dt) {
+    drainEvents();
+    hud.update(state, state.screen, dt);
+    minimap.draw(state);
+    renderer.draw(state, effects);
+    effects.applyCamera(renderer.camera, dt);
+    const g = window.__GTA;
+    g.screen = state.screen;
+    g.wanted = state.wanted;
+    g.money = state.money;
+    g.mission = state.mission?.index ?? 0;
+    g.health = state.player?.hp ?? 100;
+    const spd = state.player?.car
+      ? state.player.car.speed ?? 0
+      : state.player?.speed ?? 0;
+    g.speed = Math.round(spd * 3.6);
+  }
+
+  // Shot mode: stage, paint twice, signal ready. No game loop — the frame
+  // is static for the screenshot.
+  function runShot(name) {
+    stageShot(name, world, systems);
+    // A staged fxBurst (mission glint, muzzle) needs particles advanced
+    // once — shot mode has no loop to do it.
+    if (state.fxBurst) {
+      const b = state.fxBurst;
+      state.fxBurst = null;
+      effects.burst(b.type, b.x, b.y ?? 1, b.z);
+      effects.update(0.35);
     }
-    input.endFrame();
+    paint(1 / 60);
+    paint(1 / 60);
+    window.__shotReady = true;
+    window.__GTA.shotReady = true;
   }
 
   function frame(now) {
     requestAnimationFrame(frame);
-    const realDt = Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    frames += 1;
-    fpsT += realDt;
-    if (fpsT >= 1) {
-      fps = Math.round(frames / fpsT);
-      frames = 0;
-      fpsT = 0;
+    const dt = Math.min((now - frame._last) / 1000 || 0, MAX_FRAME);
+    frame._last = now;
+    if (dt <= 0) {
+      paint(0);
+      return;
     }
-    handleActions();
-    if (screen === 'play' || screen === 'title') {
-      accumulator += realDt;
-      while (accumulator >= STEP && (screen === 'play' || screen === 'title')) {
-        stepWorld(STEP);
-        accumulator -= STEP;
+
+    // UI keys, read BEFORE the fixed steps clear justPressed.
+    const pressed = new Set(input.justPressed || []);
+    if (pressed.has('Enter') && state.screen === 'title') startGame();
+    if (pressed.has('Escape') || pressed.has('KeyP')) {
+      if (state.screen === 'play') pauseGame();
+      else if (state.screen === 'paused') resumeGame();
+    }
+    if (pressed.has('KeyM')) toggleMute();
+
+    if (state.screen === 'play') {
+      frame._acc = (frame._acc || 0) + dt;
+      let steps = 0;
+      while (frame._acc >= STEP && steps < 5) {
+        world.step(STEP, input, systems);
+        input.endFrame();
+        frame._acc -= STEP;
+        steps++;
       }
-    } else {
-      accumulator = 0;
-      // Busted / wasted: wait, then respawn into play.
-      if (screen === 'busted' || screen === 'wasted') {
-        endTimer -= realDt;
-        if (endTimer <= 0) screen = 'play';
+      if (steps === 5) frame._acc = 0;
+      // 30 s autosave.
+      ctx.autoSaveT += dt;
+      if (ctx.autoSaveT >= 30) {
+        ctx.autoSaveT = 0;
+        saveGame(state);
+      }
+    } else if (state.screen === 'title') {
+      frame._acc = (frame._acc || 0) + dt;
+      const idle = idleInput();
+      let steps = 0;
+      while (frame._acc >= STEP && steps < 5) {
+        world.step(STEP, idle, systems);
+        frame._acc -= STEP;
+        steps++;
+      }
+      if (steps === 5) frame._acc = 0;
+    } else if (state.screen === 'busted' || state.screen === 'wasted') {
+      state.screenT -= dt;
+      if (state.screenT <= 0) {
+        state.screenT = 0;
+        state.screen = 'play';
       }
     }
-    // Sound + particles for this frame's events (before the HUD drains them).
-    drainFxEvents();
-    // Audio: engine + siren follow the world.
-    if (audio) audio.update(realDt, state, screen === 'play', input);
-    // Effects: trauma shake + particles.
-    if (effects) effects.update(realDt);
-    // HUD + minimap.
-    hud.update(state, screen, realDt);
-    minimap.draw(state);
-    // Render, then apply the camera shake (the renderer places the camera).
-    renderer.draw(state, effects);
-    if (effects) effects.applyCamera(renderer.camera, realDt);
-    // Autosave while playing.
-    if (screen === 'play') {
-      saveT += realDt;
-      if (saveT >= SAVE_EVERY) {
-        saveT = 0;
-        doSave();
-      }
-    }
-    // Diagnostics + playtest hook.
-    window.__GTA = {
-      shotReady: false,
-      screen,
-      fps,
-      wanted: state.wanted || 0,
-      money: state.money || 0,
-      mission: (state.mission && state.mission.objective) || '',
-      inCar: !!(state.player && state.player.inCar),
-      speed: state.player ? Math.abs(state.player.speed || 0) : 0,
-      hp: state.player ? state.player.hp : 0,
-      policeCars: (state.cars || []).filter((c) => c.isPolice).length,
-      state,
-      debug: {
-        teleport: (x, z, angle, car) => world.teleport(x, z, angle, car),
-        addHeat: (n, reason) => world.addHeat(n, reason),
-        startMission: (i) => systems.missions.start(i, state),
-        damagePlayer: (n) => world.damagePlayer(n),
-      },
-    };
+    // 'paused': the world holds still.
+
+    paint(dt);
   }
+  frame._last = performance.now();
+  frame._acc = 0;
 
-  // Clicking Start / Resume also starts (pointer users).
-  if (startBtn) startBtn.addEventListener('click', () => { if (screen === 'title') startGame(); });
-  if (resumeBtn) resumeBtn.addEventListener('click', () => { if (screen === 'paused') { screen = 'play'; announce('Playing.'); } });
-  // First gesture unlocks audio.
-  window.addEventListener('pointerdown', () => audio.init(), { once: true });
-  window.addEventListener('keydown', () => audio.init(), { once: true });
-  // Leaving the tab pauses a running game rather than letting it run unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === 'play') {
-      screen = 'paused';
-      announce('Paused.');
-      doSave();
-    }
-  });
-
-  announce('Solmar Bay. Press Enter or click Start.');
-  requestAnimationFrame(frame);
+  if (shot) {
+    runShot(shot);
+  } else {
+    requestAnimationFrame(frame);
+  }
+  return ctx;
 }
 
-if (shot) runShot(shot);
-else runGame();
+// Boot in the browser only — importing this module in node (tests) must
+// not touch the DOM.
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  buildGame();
+}

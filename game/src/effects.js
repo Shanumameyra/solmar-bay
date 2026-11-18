@@ -1,205 +1,204 @@
-// Solmar Bay — effects (Worker B). Pooled particles + trauma screen shake +
-// FOV kick. Juice only: shake moves the camera, never bodies or gameplay.
-// THREE and the scene are injected (main.js passes them), so the pure math
-// (trauma decay, shake) stays testable in Node with scene = null.
-// The renderer draws the mission beacon + cash pickups itself; this file
-// only owns particles and the camera feel. main.js calls update() once per
-// frame and applyCamera() after renderer.draw (see render.js).
+// effects.js — particles, trauma-based camera shake, FOV kick.
+//
+// One pooled THREE.Points cloud (soft radial-gradient sprite, so dust reads
+// as soft circles, not hard white squares). Inert when scene/THREE are
+// null (node tests): same interface, every method a safe no-op.
+// Shake follows the game-feel pattern: trauma^2, summed sines, real-time
+// decay, camera OFFSET only — never the simulation.
 
-const POOL = 240;
+const MAX_PARTICLES = 256;
 
-const BURST_DEFS = {
-  // Smoke / exhaust are light and warm now: dark grey read as gloom
-  // against the bright golden-hour sky.
-  smoke:   { count: 10, speed: 1.6, up: 1.4, life: 1.1, color: [0.62, 0.6, 0.58], size: 1.0, gravity: -0.4 },
-  exhaust: { count: 4,  speed: 0.7, up: 0.8, life: 0.7, color: [0.42, 0.42, 0.45], size: 0.7, gravity: -0.2 },
-  sparks:  { count: 16, speed: 5.0, up: 2.2, life: 0.5, color: [1.0, 0.75, 0.25], size: 0.6, gravity: -6.0 },
-  flash:   { count: 8,  speed: 3.0, up: 0.5, life: 0.12, color: [1.0, 0.95, 0.6], size: 0.9, gravity: 0 },
-  stars:   { count: 10, speed: 2.4, up: 1.8, life: 0.6, color: [0.6, 0.9, 1.0], size: 0.7, gravity: -2.0 },
-  pickup:  { count: 12, speed: 1.8, up: 2.6, life: 0.7, color: [1.0, 0.85, 0.2], size: 0.7, gravity: -1.0 },
-  // Sunlight glints: slow golden sparkles that drift up and hang in the
-  // light (used for pickups / mission moments, never for damage).
-  glint:   { count: 8,  speed: 0.6, up: 1.1, life: 1.4, color: [1.0, 0.9, 0.55], size: 0.8, gravity: -0.1 },
+const TYPES = {
+  dust: { count: 10, color: [0.85, 0.75, 0.55], speed: 1.6, up: 0.4, life: 0.7, trauma: 0.05 },
+  smoke: { count: 12, color: [0.45, 0.45, 0.48], speed: 1.2, up: 1.6, life: 1.1, trauma: 0.1 },
+  sparks: { count: 14, color: [1.0, 0.8, 0.25], speed: 5.0, up: 2.0, life: 0.45, trauma: 0.2 },
+  glint: { count: 10, color: [1.0, 0.85, 0.3], speed: 1.0, up: 1.2, life: 0.8, trauma: 0.05 },
+  muzzle: { count: 6, color: [1.0, 0.65, 0.2], speed: 3.0, up: 0.5, life: 0.18, trauma: 0.12 },
+  stars: { count: 8, color: [1.0, 0.9, 0.4], speed: 2.0, up: 1.0, life: 0.5, trauma: 0.15 },
 };
 
-// Soft round sprite for particles: hard square points read as a glitch
-// (white blocks plastered on the hero car). A radial-gradient canvas
-// texture makes smoke/dust read as a cloud. Browser-only: only called
-// when a scene exists (the Node smoke test passes scene = null).
-function makeSoftSprite() {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const g = c.getContext('2d');
-  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.5, 'rgba(255,255,255,0.5)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 64, 64);
-  return c;
+function makeSpriteTexture(THREE) {
+  try {
+    if (typeof document === 'undefined') return null;
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const g = c.getContext('2d');
+    if (!g) return null;
+    const grad = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 64, 64);
+    const tex = new THREE.CanvasTexture(c);
+    return tex;
+  } catch (e) {
+    return null;
+  }
 }
 
 export function createEffects(scene, THREE) {
-  const fx = {
+  const enabled = !!(scene && THREE);
+  const api = {
     trauma: 0,
     decay: 1.2,
-    maxOffset: 14, // pixels of shake at trauma 1
-    maxRoll: 0.02, // radians
-    strength: 1.0,
+    maxOffset: { x: 0.5, y: 0.35 },
+    maxRoll: 0.06,
+    strength: 1,
     fovKick: 0,
     _t: 0,
-    _cursor: 0,
+    _baseFov: null,
+    _lastOffset: { x: 0, y: 0, roll: 0 },
     _points: null,
     _geo: null,
-    _positions: null,
-    _colors: null,
+    _pos: null,
+    _col: null,
     _vel: null,
     _life: null,
     _maxLife: null,
-    _gravities: null,
+    _cursor: 0,
   };
 
-  if (scene && THREE) {
-    const positions = new Float32Array(POOL * 3);
-    const colors = new Float32Array(POOL * 3);
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const softTex = new THREE.CanvasTexture(makeSoftSprite());
-    const mat = new THREE.PointsMaterial({ size: 0.45, map: softTex, vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false });
-    const points = new THREE.Points(geo, mat);
-    points.frustumCulled = false;
-    points.name = 'fx-particles';
-    scene.add(points);
-    fx._points = points;
-    fx._geo = geo;
-    fx._positions = positions;
-    fx._colors = colors;
-    fx._vel = new Float32Array(POOL * 3);
-    fx._life = new Float32Array(POOL);
-    fx._maxLife = new Float32Array(POOL);
-    fx._gravities = new Float32Array(POOL);
-    for (let i = 0; i < POOL; i++) fx._positions[i * 3 + 1] = -100;
-  } else {
-    // Node / headless: keep the math arrays so burst/update still run.
-    fx._positions = new Float32Array(POOL * 3);
-    fx._colors = new Float32Array(POOL * 3);
-    fx._vel = new Float32Array(POOL * 3);
-    fx._life = new Float32Array(POOL);
-    fx._maxLife = new Float32Array(POOL);
-    fx._gravities = new Float32Array(POOL);
-    for (let i = 0; i < POOL; i++) fx._positions[i * 3 + 1] = -100;
+  if (enabled) {
+    api._pos = new Float32Array(MAX_PARTICLES * 3);
+    api._col = new Float32Array(MAX_PARTICLES * 3);
+    api._vel = new Float32Array(MAX_PARTICLES * 3);
+    api._life = new Float32Array(MAX_PARTICLES);
+    api._maxLife = new Float32Array(MAX_PARTICLES);
+    for (let i = 0; i < MAX_PARTICLES; i++) api._pos[i * 3 + 1] = -999;
+    api._geo = new THREE.BufferGeometry();
+    api._geo.setAttribute('position', new THREE.BufferAttribute(api._pos, 3));
+    api._geo.setAttribute('color', new THREE.BufferAttribute(api._col, 3));
+    const mat = new THREE.PointsMaterial({
+      size: 0.7,
+      map: makeSpriteTexture(THREE),
+      transparent: true,
+      depthWrite: false,
+      vertexColors: true,
+      sizeAttenuation: true,
+    });
+    api._points = new THREE.Points(api._geo, mat);
+    api._points.frustumCulled = false;
+    scene.add(api._points);
   }
 
-  fx.update = function update(dt) {
-    fx._t += dt;
-    if (fx.trauma > 0) fx.trauma = Math.max(0, fx.trauma - fx.decay * dt);
-    if (fx.fovKick !== 0) fx.fovKick += (0 - fx.fovKick) * Math.min(1, 4 * dt);
-    if (Math.abs(fx.fovKick) < 0.05) fx.fovKick = 0;
-    if (!fx._life) return;
-    let alive = 0;
-    for (let i = 0; i < POOL; i++) {
-      if (fx._life[i] <= 0) continue;
-      alive++;
-      fx._life[i] -= dt;
-      const ix = i * 3;
-      if (fx._life[i] <= 0) {
-        fx._positions[ix + 1] = -100;
+  api._spawn = function _spawn(type, x, y, z, opts) {
+    if (!enabled) return;
+    const def = TYPES[type] || TYPES.dust;
+    const count = (opts && opts.count) || def.count;
+    for (let n = 0; n < count; n++) {
+      const i = api._cursor;
+      api._cursor = (api._cursor + 1) % MAX_PARTICLES;
+      const spread = (opts && opts.spread) || 0.6;
+      api._pos[i * 3] = x + (Math.random() * 2 - 1) * spread;
+      api._pos[i * 3 + 1] = y + (Math.random() * 2 - 1) * spread * 0.6;
+      api._pos[i * 3 + 2] = z + (Math.random() * 2 - 1) * spread;
+      const a = Math.random() * Math.PI * 2;
+      const sp = def.speed * (0.4 + Math.random() * 0.8);
+      api._vel[i * 3] = Math.cos(a) * sp;
+      api._vel[i * 3 + 1] = def.up * (0.5 + Math.random());
+      api._vel[i * 3 + 2] = Math.sin(a) * sp;
+      api._col[i * 3] = def.color[0];
+      api._col[i * 3 + 1] = def.color[1];
+      api._col[i * 3 + 2] = def.color[2];
+      api._life[i] = api._maxLife[i] = def.life * (0.7 + Math.random() * 0.6);
+    }
+    if (api._geo) {
+      api._geo.attributes.position.needsUpdate = true;
+      api._geo.attributes.color.needsUpdate = true;
+    }
+  };
+
+  api.burst = function burst(type, x, y, z, opts) {
+    if (!enabled) return;
+    api._spawn(type, x, y ?? 1, z, opts);
+    const def = TYPES[type];
+    if (def) api.addTrauma(def.trauma);
+  };
+
+  api.addTrauma = function addTrauma(n) {
+    api.trauma = Math.min(1, Math.max(0, api.trauma + n));
+  };
+
+  // One call per event tier: small (pickup), medium (hit), large (death).
+  api.feedback = function feedback(kind, x, y, z) {
+    if (!enabled) return;
+    if (kind === 'hit') {
+      api.burst('sparks', x, y ?? 1.4, z);
+      api.addTrauma(0.35);
+    } else if (kind === 'pickup') {
+      api.burst('glint', x, y ?? 1.2, z);
+      api.addTrauma(0.1);
+    } else if (kind === 'death') {
+      api.burst('smoke', x, y ?? 1.5, z, { count: 24 });
+      api.addTrauma(1.0);
+    } else if (kind === 'shot') {
+      api.burst('muzzle', x, y ?? 1.4, z);
+      api.addTrauma(0.15);
+    } else if (kind === 'busted') {
+      api.burst('smoke', x, y ?? 1.5, z);
+      api.addTrauma(0.3);
+    } else if (kind === 'land') {
+      api.burst('dust', x, y ?? 0.3, z);
+      api.addTrauma(0.2);
+    }
+  };
+
+  api.update = function update(dt) {
+    if (!enabled) return;
+    api.trauma = Math.max(0, api.trauma - api.decay * dt);
+    api.fovKick *= Math.exp(-4 * dt);
+    if (Math.abs(api.fovKick) < 0.01) api.fovKick = 0;
+    let any = false;
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+      if (api._life[i] <= 0) continue;
+      any = true;
+      api._life[i] -= dt;
+      if (api._life[i] <= 0) {
+        api._pos[i * 3 + 1] = -999;
         continue;
       }
-      fx._vel[ix + 1] += fx._gravities[i] * dt;
-      fx._positions[ix] += fx._vel[ix] * dt;
-      fx._positions[ix + 1] += fx._vel[ix + 1] * dt;
-      fx._positions[ix + 2] += fx._vel[ix + 2] * dt;
+      api._vel[i * 3 + 1] -= 2.5 * dt;
+      api._pos[i * 3] += api._vel[i * 3] * dt;
+      api._pos[i * 3 + 1] += api._vel[i * 3 + 1] * dt;
+      api._pos[i * 3 + 2] += api._vel[i * 3 + 2] * dt;
+      // Fade by shrinking toward the ground colour: dim the vertex colour.
+      const f = api._life[i] / api._maxLife[i];
+      api._col[i * 3] *= 0.985 + 0.015 * f;
+      api._col[i * 3 + 1] *= 0.985 + 0.015 * f;
+      api._col[i * 3 + 2] *= 0.985 + 0.015 * f;
     }
-    if (fx._geo && alive > 0) {
-      fx._geo.attributes.position.needsUpdate = true;
-      fx._geo.attributes.color.needsUpdate = true;
-    }
+    if (any && api._geo) api._geo.attributes.position.needsUpdate = true;
   };
 
-  fx.burst = function burst(type, x, y, z, opts) {
-    const def = BURST_DEFS[type] || BURST_DEFS.smoke;
-    const count = (opts && opts.count) || def.count;
-    const spread = (opts && opts.spread) || 1;
-    for (let n = 0; n < count; n++) {
-      const i = fx._cursor;
-      fx._cursor = (fx._cursor + 1) % POOL;
-      const ix = i * 3;
-      fx._positions[ix] = x + (Math.random() - 0.5) * 0.4;
-      fx._positions[ix + 1] = y;
-      fx._positions[ix + 2] = z + (Math.random() - 0.5) * 0.4;
-      const a = Math.random() * Math.PI * 2;
-      const sp = def.speed * (0.4 + Math.random() * 0.8) * spread;
-      fx._vel[ix] = Math.cos(a) * sp;
-      fx._vel[ix + 1] = def.up * (0.5 + Math.random() * 0.8);
-      fx._vel[ix + 2] = Math.sin(a) * sp;
-      fx._colors[ix] = def.color[0];
-      fx._colors[ix + 1] = def.color[1];
-      fx._colors[ix + 2] = def.color[2];
-      fx._life[i] = def.life * (0.7 + Math.random() * 0.6);
-      fx._maxLife[i] = fx._life[i];
-      fx._gravities[i] = def.gravity;
+  // Camera offset only — the renderer sets the base transform every frame
+  // before this runs, so the shake never accumulates. FOV kick widens the
+  // lens briefly at speed / on impacts.
+  api.applyCamera = function applyCamera(camera, dt) {
+    if (!enabled || !camera) return;
+    api._t += (dt ?? 0.016) * 30;
+    const shake = api.trauma * api.trauma * api.strength;
+    const ox = api.maxOffset.x * shake * Math.sin(api._t * 1.7);
+    const oy = api.maxOffset.y * shake * Math.sin(api._t * 2.3);
+    const roll = api.maxRoll * shake * Math.sin(api._t * 1.1);
+    api._lastOffset = { x: ox, y: oy, roll };
+    if (shake > 0.0001) {
+      camera.position.x += ox;
+      camera.position.y += oy;
+      camera.rotation.z += roll;
     }
-    if (fx._geo) fx._geo.attributes.position.needsUpdate = true;
-  };
-
-  fx.addTrauma = function addTrauma(amount) {
-    fx.trauma = Math.min(1, fx.trauma + amount);
-  };
-
-  // Tiered feedback bundles: one call for a game moment.
-  fx.feedback = function feedback(kind, x, y, z) {
-    if (kind === 'hit') {
-      fx.addTrauma(0.35);
-      fx.burst('sparks', x, y, z);
-    } else if (kind === 'punch') {
-      fx.addTrauma(0.12);
-      fx.burst('stars', x, y, z);
-    } else if (kind === 'explosion') {
-      fx.addTrauma(0.7);
-      fx.fovKick = 4;
-      fx.burst('smoke', x, y, z, { count: 24 });
-      fx.burst('sparks', x, y, z, { count: 20 });
-    } else if (kind === 'pickup') {
-      fx.burst('pickup', x, y, z);
-      fx.burst('glint', x, y, z);
-    } else if (kind === 'glint') {
-      fx.burst('glint', x, y, z);
-    } else if (kind === 'crash') {
-      fx.addTrauma(0.5);
-      fx.burst('smoke', x, y, z, { count: 16 });
-      fx.burst('sparks', x, y, z, { count: 12 });
+    if (api._baseFov == null) api._baseFov = camera.fov;
+    const wantFov = api._baseFov + api.fovKick;
+    if (Math.abs(camera.fov - wantFov) > 0.01) {
+      camera.fov = wantFov;
+      if (camera.updateProjectionMatrix) camera.updateProjectionMatrix();
     }
   };
 
-  // Trauma shake: sum of sines, deterministic in time. Called AFTER
-  // renderer.draw (the renderer places the camera first). Returns the offset
-  // applied, so tests can assert on it.
-  fx.applyCamera = function applyCamera(camera, dt) {
-    if (!camera) return { x: 0, y: 0, roll: 0 };
-    const s = fx.trauma * fx.trauma * fx.strength;
-    if (s <= 0.001) return { x: 0, y: 0, roll: 0 };
-    const t = fx._t * 47;
-    const ox = (Math.sin(t * 1.1) + Math.sin(t * 2.3) * 0.5) * fx.maxOffset * s;
-    const oy = (Math.cos(t * 1.7) + Math.sin(t * 2.9) * 0.5) * fx.maxOffset * s;
-    const roll = Math.sin(t * 1.3) * fx.maxRoll * s;
-    camera.position.x += ox * 0.01;
-    camera.position.y += oy * 0.01;
-    camera.rotation.z += roll;
-    return { x: ox, y: oy, roll };
+  api.getCameraOffset = function getCameraOffset() {
+    return { ...api._lastOffset };
   };
 
-  fx.getCameraOffset = function getCameraOffset() {
-    const s = fx.trauma * fx.trauma * fx.strength;
-    if (s <= 0.001) return { x: 0, y: 0, roll: 0 };
-    const t = fx._t * 47;
-    return {
-      x: (Math.sin(t * 1.1) + Math.sin(t * 2.3) * 0.5) * fx.maxOffset * s,
-      y: (Math.cos(t * 1.7) + Math.sin(t * 2.9) * 0.5) * fx.maxOffset * s,
-      roll: Math.sin(t * 1.3) * fx.maxRoll * s,
-    };
-  };
-
-  return fx;
+  return api;
 }

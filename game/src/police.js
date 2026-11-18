@@ -1,399 +1,447 @@
-// Solmar Bay — police / wanted system (Worker B).
-// Wanted 0-5. The police OWNS the wanted level: world.addHeat routes through
-// police.addHeat, and police mirrors its own count onto state.wanted every
-// step (a direct bump of state.wanted would be overwritten). Heat sources
-// call addHeat(); pursuit spawns SBPD cars (and on-foot cops at 3+ stars,
-// per CONFIG.WANTED.TIERS), chases, rams, and sets roadblocks at 3+ stars.
-// Busted: on foot, a cop within 3 m for 2 s; in a car, speed < 2 m/s with a
-// police car within 4 m for 3 s. Cooldown: 15 s out of sight, then -1 star
-// per 10 s. Police cars live in state.cars (kind 'police', driver 'police');
-// on-foot cops live in state.peds (isCop). All movement is kinematic here;
-// rendering stays in render.js.
+// police.js — SBPD wanted level, pursuit, roadblocks and busts.
 //
-// Heading convention (shared with Worker A): a car's forward vector is
-// (sin(angle), 0, cos(angle)) in world space, rotation.y = -angle.
+// Police OWNS the wanted level (0-5) and mirrors it onto state.wanted every
+// step. Police cars live in state.cars (kind 'police', driver 'police',
+// lightBar on); on-foot cops live in state.peds (isCop). Uses Math.random
+// (shots.js seeds it while staging, so staged chases are deterministic).
 
 import { CONFIG } from './config.js';
 import { createCar } from './vehicle.js';
 
-let nextId = 10000;
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-export function createPolice() {
-  const police = {
-    wanted: 0,
-    heat: 0,
-    lastSeenAt: -1e9,
-    nextDecayAt: 0,
-    bustT: 0,
-    roadblockT: 0,
-    spawnT: 0,
-
-    reset() {
-      this.wanted = 0;
-      this.heat = 0;
-      this.lastSeenAt = -1e9;
-      this.nextDecayAt = 0;
-      this.bustT = 0;
-      this.roadblockT = 0;
-      this.spawnT = 0;
-    },
-
-    addHeat(n, reason, state) {
-      if (!state) return;
-      const before = this.wanted;
-      this.wanted = Math.max(0, Math.min(CONFIG.WANTED.MAX_STARS, this.wanted + n));
-      this.heat += n;
-      this.lastSeenAt = state.time || 0;
-      this.nextDecayAt = 0;
-      if (this.wanted > before) {
-        pushEvent(state, 'wanted', `WANTED ${'★'.repeat(this.wanted)} — the SBPD is on you`);
-      }
-      if (state) state.wanted = this.wanted;
-    },
-
-    desiredUnits() {
-      const tier = CONFIG.WANTED.TIERS[Math.max(0, Math.min(5, this.wanted))] || CONFIG.WANTED.TIERS[0];
-      return { cars: tier.cars, cops: tier.foot, speedMul: tier.speedMul };
-    },
-
-    step(dt, state) {
-      if (!state || !state.player) return;
-      const t = state.time || 0;
-      state.wanted = this.wanted;
-      const player = state.player;
-      const cars = state.cars || [];
-      const peds = state.peds || [];
-      const W = CONFIG.WANTED;
-
-      // --- sight: any police unit within 55 m counts as "seen" ---
-      let seen = false;
-      let nearest = 1e9;
-      let policeNear = false;
-      for (const c of cars) {
-        if (!c.isPolice) continue;
-        const d = dist2d(c.x, c.z, player.x, player.z);
-        if (d < nearest) nearest = d;
-        if (d < 55) seen = true;
-        if (d < 30) policeNear = true;
-      }
-      for (const p of peds) {
-        if (!p.isCop) continue;
-        const d = dist2d(p.x, p.z, player.x, player.z);
-        if (d < nearest) nearest = d;
-        if (d < 40) seen = true;
-        if (d < 25) policeNear = true;
-      }
-      state.policeNear = policeNear;
-      if (seen) this.lastSeenAt = t;
-
-      // --- spawn / despawn to match the wanted level ---
-      this.spawnT -= dt;
-      const want = this.desiredUnits();
-      const policeCars = cars.filter((c) => c.isPolice);
-      const cops = peds.filter((p) => p.isCop);
-      if (this.wanted > 0 && this.spawnT <= 0) {
-        this.spawnT = 1.0;
-        if (policeCars.length < want.cars) {
-          this.spawnCar(state, player);
-        }
-        // Military tank at 4+ stars (spawnTank guards against duplicates).
-        if (this.wanted >= 4) {
-          this.spawnTank(state, player);
-        }
-        if (cops.length < want.cops && !player.inCar) {
-          this.spawnCop(state, player);
-        }
-        // Despawn units that fell far behind.
-        for (let i = cars.length - 1; i >= 0; i--) {
-          const c = cars[i];
-          if (c.isPolice && dist2d(c.x, c.z, player.x, player.z) > 140) {
-            cars.splice(i, 1);
-          }
-        }
-      }
-      if (this.wanted === 0) {
-        // Wanted cleared: police give up and drive off.
-        for (let i = cars.length - 1; i >= 0; i--) {
-          if (cars[i].isPolice) cars.splice(i, 1);
-        }
-        for (let i = peds.length - 1; i >= 0; i--) {
-          if (peds[i].isCop) peds.splice(i, 1);
-        }
-        this.bustT = 0;
-      }
-
-      // --- pursuit ---
-      const topSpeed = (24 + this.wanted * 2.2) * (want.speedMul || 1);
-      for (const c of cars) {
-        if (!c.isPolice) continue;
-        this.pursueCar(dt, state, c, player, topSpeed);
-      }
-      for (const p of peds) {
-        if (!p.isCop) continue;
-        this.pursueCop(dt, state, p, player);
-      }
-
-      // --- roadblock at 3+ stars: one car parks ahead of the player's path ---
-      this.roadblockT -= dt;
-      if (this.wanted >= 3 && this.roadblockT <= 0 && player.inCar) {
-        this.roadblockT = 14;
-        const ahead = policeCars.find((c) => !c.roadblock);
-        if (ahead) {
-          const fx = Math.sin(player.yaw || 0);
-          const fz = Math.cos(player.yaw || 0);
-          ahead.x = clamp(player.x + fx * 42, -190, 190);
-          ahead.z = clamp(player.z + fz * 42, -190, 190);
-          ahead.angle = Math.atan2(-fx, -fz);
-          ahead.speed = 0;
-          ahead.roadblock = true;
-          ahead.roadblockT = 8;
-          pushEvent(state, 'info', 'Roadblock ahead — SBPD is setting up');
-        }
-      }
-      for (const c of cars) {
-        if (c.isPolice && c.roadblock) {
-          c.roadblockT -= dt;
-          if (c.roadblockT <= 0) c.roadblock = false;
-        }
-      }
-
-      // --- bust check ---
-      if (this.wanted > 0) {
-        const onFoot = !player.inCar;
-        const speed = Math.abs(player.speed || 0);
-        const bustRange = onFoot ? W.BUST_FOOT_RANGE : W.BUST_CAR_RANGE;
-        const bustTime = onFoot ? W.BUST_FOOT_TIME : W.BUST_CAR_TIME;
-        const closeEnough = nearest < bustRange && (onFoot || speed < W.BUST_CAR_SPEED);
-        if (closeEnough) {
-          this.bustT += dt;
-          if (this.bustT >= bustTime) this.bust(state);
-        } else {
-          this.bustT = 0;
-        }
-      }
-
-      // --- cooldown: 15 s out of sight, then -1 star per 10 s ---
-      if (this.wanted > 0 && t - this.lastSeenAt > W.DECAY_SIGHT_LOST) {
-        if (this.nextDecayAt === 0) this.nextDecayAt = t + W.DECAY_PER_STAR;
-        if (t >= this.nextDecayAt) {
-          this.wanted -= 1;
-          state.wanted = this.wanted;
-          this.nextDecayAt = t + W.DECAY_PER_STAR;
-          if (this.wanted === 0) {
-            pushEvent(state, 'info', 'You lost them — heat is off');
-          } else {
-            pushEvent(state, 'info', `Heat dropping — ${'★'.repeat(this.wanted)}`);
-          }
-        }
-      } else {
-        this.nextDecayAt = 0;
-      }
-    },
-
-    pursueCar(dt, state, car, player, topSpeed) {
-      if (car.roadblock) return; // parked across the road
-      const dx = player.x - car.x;
-      const dz = player.z - car.z;
-      const dist = Math.hypot(dx, dz) || 0.001;
-      const targetAngle = Math.atan2(dx, dz);
-      car.angle = turnToward(car.angle, targetAngle, 2.4 * dt);
-      // Ram: close in, then shove the player's car.
-      const wantSpeed = dist > 6 ? topSpeed : topSpeed * 0.55;
-      car.speed += clamp(wantSpeed - car.speed, -14 * dt, 10 * dt);
-      car.x += Math.sin(car.angle) * car.speed * dt;
-      car.z += Math.cos(car.angle) * car.speed * dt;
-      pushOutOfBuildings(state, car, 2.2);
-      car.x = clamp(car.x, -195, 195);
-      car.z = clamp(car.z, -195, 195);
-      if (dist < 3.4 && player.inCar) {
-        // Ram impact: damage the player's car, shake, sparks.
-        const pcar = (state.cars || []).find((c) => c.id === player.carId);
-        if (pcar && !car._ramCd) {
-          car._ramCd = 1.2;
-          pcar.hp = Math.max(0, (pcar.hp || 100) - 6);
-          pcar.speed *= 0.82;
-          pushEvent(state, 'hit', 'SBPD rammed your car!');
-          state.shakeTrauma = Math.min(1, (state.shakeTrauma || 0) + 0.35);
-          state.fxBurst = { type: 'sparks', x: player.x, y: 1.2, z: player.z };
-        }
-      }
-      if (car._ramCd) car._ramCd -= dt;
-      car.lightBar = this.wanted >= 1;
-    },
-
-    pursueCop(dt, state, cop, player) {
-      const dx = player.x - cop.x;
-      const dz = player.z - cop.z;
-      const dist = Math.hypot(dx, dz) || 0.001;
-      cop.angle = Math.atan2(dx, dz);
-      const speed = 6.5;
-      cop.x += Math.sin(cop.angle) * speed * dt;
-      cop.z += Math.cos(cop.angle) * speed * dt;
-      pushOutOfBuildings(state, cop, 1.0);
-      cop.x = clamp(cop.x, -195, 195);
-      cop.z = clamp(cop.z, -195, 195);
-      cop.state = dist < 12 ? 'chase' : 'walk';
-    },
-
-    spawnCar(state, player) {
-      const cars = state.cars || (state.cars = []);
-      const a = Math.random() * Math.PI * 2;
-      const d = 32 + Math.random() * 14;
-      const x = clamp(player.x + Math.sin(a) * d, -190, 190);
-      const z = clamp(player.z + Math.cos(a) * d, -190, 190);
-      // Use vehicle.js createCar so the unit has the full car shape
-      // (len/wid/hgt/topSpeed/steer/...) — a hand-built object without
-      // len/wid poisons collideCars with NaN and breaks the renderer.
-      const car = createCar('police', x, z, Math.atan2(player.x - x, player.z - z),
-        { id: nextId++, isPolice: true, driver: 'police' });
-      car.speed = 8;
-      car.lightBar = true;
-      car.roadblock = false;
-      car.roadblockT = 0;
-      pushOutOfBuildings(state, car, 2.2);
-      cars.push(car);
-    },
-
-    // Military tank (wanted 4+): a slow, heavy police unit that rams. It
-    // is a kind==='tank' car, so render.js draws its own armoured group
-    // instead of the box-car instancing; pursuit/ramming reuse pursueCar.
-    spawnTank(state, player) {
-      const cars = state.cars || (state.cars = []);
-      if (cars.some((c) => c.kind === 'tank')) return null;
-      const a = Math.random() * Math.PI * 2;
-      const d = 30 + Math.random() * 10;
-      const x = clamp(player.x + Math.sin(a) * d, -190, 190);
-      const z = clamp(player.z + Math.cos(a) * d, -190, 190);
-      const tank = createCar('tank', x, z, Math.atan2(player.x - x, player.z - z),
-        { id: nextId++, isPolice: true, driver: 'police' });
-      tank.speed = 6;
-      tank.lightBar = false;
-      tank.roadblock = false;
-      tank.roadblockT = 0;
-      pushOutOfBuildings(state, tank, 2.6);
-      cars.push(tank);
-      return tank;
-    },
-
-    spawnCop(state, player) {
-      const peds = state.peds || (state.peds = []);
-      const a = Math.random() * Math.PI * 2;
-      const d = 22 + Math.random() * 10;
-      const x = clamp(player.x + Math.sin(a) * d, -190, 190);
-      const z = clamp(player.z + Math.cos(a) * d, -190, 190);
-      // Full ped shape (traffic.js contract): stepPed resets state to
-      // 'walk' every step and reads ped.loop[ped.loopIdx], so a cop
-      // without a loop crashes the world. The 2-point loop is a short
-      // patrol beat; pursueCop overrides the position toward the player.
-      const cop = {
-        id: nextId++,
-        x, z,
-        angle: 0,
-        speed: 0,
-        hp: CONFIG.COMBAT.POLICE_HP,
-        isCop: true,
-        isTaxiCustomer: false,
-        state: 'chase',
-        loop: [[x - 2, z], [x + 2, z]],
-        loopIdx: 1,
-        path: null,
-        pathIdx: 0,
-        flee: 0,
-        fleeT: 0,
-        fleeFrom: null,
-        color: 0x1e3a8a,
-        bobPhase: Math.random() * Math.PI * 2,
-      };
-      pushOutOfBuildings(state, cop, 1.0);
-      peds.push(cop);
-    },
-
-    bust(state) {
-      const player = state.player;
-      const lost = Math.min(state.money || 0, CONFIG.WANTED.BUST_FINE);
-      state.money = Math.max(0, (state.money || 0) - CONFIG.WANTED.BUST_FINE);
-      state.stats.busted = (state.stats.busted || 0) + 1;
-      this.wanted = 0;
-      state.wanted = 0;
-      this.bustT = 0;
-      this.lastSeenAt = -1e9;
-      // Clear all police units.
-      if (state.cars) {
-        for (let i = state.cars.length - 1; i >= 0; i--) {
-          if (state.cars[i].isPolice) state.cars.splice(i, 1);
-        }
-      }
-      if (state.peds) {
-        for (let i = state.peds.length - 1; i >= 0; i--) {
-          if (state.peds[i].isCop) state.peds.splice(i, 1);
-        }
-      }
-      // A busted mission fails (missions.js re-arms at the café).
-      if (state.systems && state.systems.missions && state.systems.missions.phase === 'active') {
-        state.systems.missions.fail(state, 'Busted by the SBPD');
-      }
-      // Respawn at the precinct, on foot. The car stays where it was busted.
-      const precinct = (state.landmarks && state.landmarks.precinct)
-        || (state.spawnPoints && state.spawnPoints.precinct)
-        || { x: 0, z: 0 };
-      const pcar = player.carId != null
-        ? (state.cars || []).find((c) => c.id === player.carId) : null;
-      if (pcar) pcar.driver = null;
-      // Fully get out of the car: leaving player.car set (or onFoot false)
-      // makes stepPlayer sync the player back to the busted car's position
-      // on the next step, undoing the precinct respawn.
-      player.car = null;
-      player.carId = null;
-      player.inCar = false;
-      player.onFoot = true;
-      player.x = precinct.x;
-      player.z = precinct.z;
-      player.hp = player.maxHp || 100;
-      player.speed = 0;
-      state.screen = 'busted';
-      state.screenT = 2.5;
-      pushEvent(state, 'busted', `BUSTED! You lost $${lost}`);
-    },
-  };
-  return police;
+function angDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }
 
-function dist2d(x1, z1, x2, z2) {
-  return Math.hypot(x1 - x2, z1 - z2);
+function distTo(ax, az, bx, bz) {
+  return Math.hypot(ax - bx, az - bz);
 }
 
-function clamp(v, lo, hi) {
-  return v < lo ? lo : v > hi ? hi : v;
-}
-
-function turnToward(angle, target, maxStep) {
-  let diff = target - angle;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  return angle + clamp(diff, -maxStep, maxStep);
-}
-
-function pushOutOfBuildings(state, obj, radius) {
-  const colliders = state.colliders;
-  if (!colliders || !colliders.length) return;
-  for (const b of colliders) {
-    if (obj.x > b.minX - radius && obj.x < b.maxX + radius
-      && obj.z > b.minZ - radius && obj.z < b.maxZ + radius) {
-      const dxl = obj.x - (b.minX - radius);
-      const dxr = (b.maxX + radius) - obj.x;
-      const dzl = obj.z - (b.minZ - radius);
-      const dzr = (b.maxZ + radius) - obj.z;
-      const m = Math.min(dxl, dxr, dzl, dzr);
-      if (m === dxl) obj.x = b.minX - radius;
-      else if (m === dxr) obj.x = b.maxX + radius;
-      else if (m === dzl) obj.z = b.minZ - radius;
-      else obj.z = b.maxZ + radius;
-    }
+function pushEv(state, ev) {
+  if (state && Array.isArray(state.events)) {
+    state.events.push({ t: state.time ?? 0, ...ev });
   }
 }
 
-function pushEvent(state, type, text) {
-  if (!state.events) state.events = [];
-  if (state.events.length > 24) state.events.shift();
-  state.events.push({ type, text, t: state.time || 0 });
+function inCollider(state, x, z, pad) {
+  const cs = state.colliders;
+  if (!cs) return false;
+  for (const c of cs) {
+    if (x > c.minX - pad && x < c.maxX + pad && z > c.minZ - pad && z < c.maxZ + pad) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function nextCarId(state) {
+  let max = 0;
+  let count = 0;
+  for (const c of state.cars || []) {
+    count++;
+    if (typeof c.id === 'number' && c.id > max) max = c.id;
+  }
+  return Math.max(max, count) + 1;
+}
+
+function nextPedId(state) {
+  let max = 0;
+  let count = 0;
+  for (const p of state.peds || []) {
+    count++;
+    if (typeof p.id === 'number' && p.id > max) max = p.id;
+  }
+  return Math.max(max, count) + 1;
+}
+
+function policeCars(state) {
+  return (state.cars || []).filter((c) => c.isPolice || c.kind === 'police');
+}
+
+function cops(state) {
+  return (state.peds || []).filter((p) => p.isCop);
+}
+
+function stars(n) {
+  return '★'.repeat(n) + '☆'.repeat(Math.max(0, 5 - n));
+}
+
+export function createPolice() {
+  const api = {
+    wanted: 0,
+    heat: 0,
+    lastSeenAt: 0,
+    nextDecayAt: 0,
+    bustT: 0,
+    roadblockT: 20,
+    spawnT: 0,
+    _state: null,
+
+    reset() {
+      api.wanted = 0;
+      api.heat = 0;
+      api.lastSeenAt = 0;
+      api.nextDecayAt = 0;
+      api.bustT = 0;
+      api.roadblockT = 20;
+      api.spawnT = 0;
+      api._state = null;
+    },
+
+    // Desired SBPD strength for the current wanted level, from CONFIG.
+    desiredUnits() {
+      const tiers = CONFIG.WANTED.TIERS;
+      const t = tiers[clamp(api.wanted, 0, tiers.length - 1)] || { cars: 0, foot: 0, speedMul: 1 };
+      return { cars: t.cars ?? 0, foot: t.foot ?? 0, speedMul: t.speedMul ?? 1 };
+    },
+
+    addHeat(n, reason, state) {
+      const st = state || api._state;
+      const before = api.wanted;
+      api.wanted = clamp(api.wanted + n, 0, CONFIG.WANTED.MAX_STARS ?? 5);
+      api.heat = api.wanted;
+      if (st) api.lastSeenAt = st.time ?? 0;
+      api.nextDecayAt = 0;
+      if (st && n > 0 && api.wanted !== before) {
+        pushEv(st, {
+          type: 'wanted',
+          text: `WANTED ${stars(api.wanted)}${reason ? ' — ' + reason : ''}`,
+        });
+      }
+    },
+
+    // Full contract shape: built through vehicle.js createCar, so the car
+    // carries len/wid/hgt/topSpeed/steer like every other car (a hand-built
+    // object without len/wid once poisoned collideCars with NaN positions).
+    spawnCar(state, x, z, angle, opts = {}) {
+      const st = state || api._state;
+      if (!st) return null;
+      const car = createCar('police', x, z, angle ?? 0, {
+        driver: 'police',
+        isPolice: true,
+        lightBar: true,
+        ...(opts || {}),
+      });
+      car.kind = 'police';
+      car.isPolice = true;
+      car.lightBar = true;
+      car.driver = 'police';
+      if (typeof car.id !== 'number') car.id = nextCarId(st);
+      (st.cars = st.cars || []).push(car);
+      return car;
+    },
+
+    // Full ped shape (loop/path/flee/bobPhase included): stepPed reads
+    // ped.loop[ped.loopIdx] every step, so a cop without a loop crashes it.
+    spawnCop(state, x, z, opts = {}) {
+      const st = state || api._state;
+      if (!st) return null;
+      const cop = {
+        id: nextPedId(st),
+        x,
+        z,
+        angle: 0,
+        speed: 0,
+        hp: CONFIG.COMBAT.POLICE_HP ?? 100,
+        isCop: true,
+        isTaxiCustomer: false,
+        state: 'walk',
+        color: 0x2a4d8f,
+        loop: [
+          [x, z],
+          [x + 8, z],
+        ],
+        loopIdx: 0,
+        path: null,
+        pathIdx: 0,
+        flee: false,
+        fleeT: 0,
+        fleeFrom: null,
+        bobPhase: Math.random() * Math.PI * 2,
+        ...(opts || {}),
+      };
+      (st.peds = st.peds || []).push(cop);
+      return cop;
+    },
+
+    // Kinematic chase: steer toward the player, accelerate to the tier's
+    // chase speed, ram the player's car on contact. Sits still while it is
+    // a roadblock (_rbT set by the roadblock spawn).
+    pursueCar(dt, state, car) {
+      const p = state.player;
+      if (!p) return;
+      if (car._rbT && state.time < car._rbT) {
+        car.speed = 0;
+        return;
+      }
+      const dx = p.x - car.x;
+      const dz = p.z - car.z;
+      const d = Math.hypot(dx, dz) || 0.001;
+      const want = Math.atan2(dx, dz);
+      car.angle += clamp(angDiff(want, car.angle), -2.4 * dt, 2.4 * dt);
+      const tier = api.desiredUnits();
+      const chaseTop = (car.topSpeed || CONFIG.CAR.TOP) * (tier.speedMul ?? 1);
+      const target = d > 6 ? chaseTop : Math.min(chaseTop, 12);
+      car.speed = clamp(
+        (car.speed ?? 0) + (target - (car.speed ?? 0)) * Math.min(1, dt * 1.5),
+        0,
+        chaseTop,
+      );
+      const nx = car.x + Math.sin(car.angle) * car.speed * dt;
+      const nz = car.z + Math.cos(car.angle) * car.speed * dt;
+      if (inCollider(state, nx, nz, 2.5)) {
+        car.angle += 1.6 * dt;
+        car.speed = Math.max(0, car.speed - 12 * dt);
+      } else {
+        car.x = clamp(nx, -198, 198);
+        car.z = clamp(nz, -198, 198);
+      }
+      car.steer = clamp(angDiff(want, car.angle), -0.6, 0.6);
+      // Ram the player's car on contact.
+      if (p.car && d < 4.5) {
+        car._ramCd = (car._ramCd ?? 0) - dt;
+        if (car._ramCd <= 0) {
+          car._ramCd = 0.6;
+          p.car.hp = Math.max(0, (p.car.hp ?? 100) - 6);
+          pushEv(state, { type: 'carDamage', text: 'Police rammed your car!' });
+          state.shakeTrauma = Math.min(1, (state.shakeTrauma ?? 0) + 0.25);
+        }
+      }
+      // Run over an on-foot player.
+      if (p.onFoot && d < 2.2) {
+        car._runCd = (car._runCd ?? 0) - dt;
+        if (car._runCd <= 0) {
+          car._runCd = 1.0;
+          state.systems?.combat?.damagePlayer?.(10, state);
+        }
+      }
+    },
+
+    // On-foot cop: A* toward the player when a nav grid exists, direct
+    // steering with wall sliding otherwise. Stops inside arm's reach;
+    // combat.js lands the actual hit.
+    pursueCop(dt, state, cop) {
+      const p = state.player;
+      if (!p) return;
+      const d = distTo(cop.x, cop.z, p.x, p.z);
+      if (d < 1.6) {
+        cop.speed = 0;
+        return;
+      }
+      cop._pathT = (cop._pathT ?? 0) - dt;
+      let tx = p.x;
+      let tz = p.z;
+      if (state.navGrid && typeof state.navGrid.findPath === 'function') {
+        if (cop._pathT <= 0 || !cop.path || cop.pathIdx >= (cop.path?.length ?? 0)) {
+          cop._pathT = 1.5;
+          const path = state.navGrid.findPath(cop.x, cop.z, p.x, p.z);
+          if (path && path.length) {
+            cop.path = path;
+            cop.pathIdx = 0;
+          }
+        }
+        if (cop.path && cop.pathIdx < cop.path.length) {
+          const wp = cop.path[cop.pathIdx];
+          tx = wp[0];
+          tz = wp[1];
+          if (distTo(cop.x, cop.z, tx, tz) < 1.5) cop.pathIdx++;
+        }
+      }
+      const dx = tx - cop.x;
+      const dz = tz - cop.z;
+      const want = Math.atan2(dx, dz);
+      cop.angle += clamp(angDiff(want, cop.angle), -3 * dt, 3 * dt);
+      const spd = 5.2;
+      const nx = cop.x + Math.sin(cop.angle) * spd * dt;
+      const nz = cop.z + Math.cos(cop.angle) * spd * dt;
+      if (!inCollider(state, nx, nz, 0.6)) {
+        cop.x = nx;
+        cop.z = nz;
+      } else if (!inCollider(state, nx, cop.z, 0.6)) {
+        cop.x = nx;
+      } else if (!inCollider(state, cop.x, nz, 0.6)) {
+        cop.z = nz;
+      }
+      cop.speed = spd;
+      cop.bobPhase = (cop.bobPhase ?? 0) + dt * 9;
+    },
+
+    // Caught: lose the fine (or all cash if less), respawn at the precinct,
+    // wanted back to 0. Clears player.car AND sets onFoot — otherwise the
+    // next stepPlayer syncs the position back to the busted car and the
+    // respawn never happens.
+    bust(state) {
+      const fine = Math.min(state.money ?? 0, CONFIG.WANTED.BUST_FINE ?? 200);
+      state.money = (state.money ?? 0) - fine;
+      if (state.stats) state.stats.busted = (state.stats.busted ?? 0) + 1;
+      const prec =
+        state.landmarks?.precinct ||
+        CONFIG.LANDMARKS?.precinct ||
+        { x: 72, z: 144 };
+      const p = state.player;
+      if (p.car) p.car.driver = null;
+      p.car = null;
+      p.carId = null;
+      p.inCar = false;
+      p.onFoot = true;
+      p.x = prec.x;
+      p.z = prec.z;
+      p.heading = Math.PI;
+      p.yaw = Math.PI;
+      p.speed = 0;
+      p.hp = p.maxHp ?? 100;
+      state.health = p.hp;
+      p.invuln = 3;
+      api.wanted = 0;
+      api.heat = 0;
+      api.bustT = 0;
+      api.nextDecayAt = 0;
+      state.wanted = 0;
+      state.screen = 'busted';
+      state.screenT = 2.5;
+      pushEv(state, { type: 'busted', text: `Busted! The SBPD got you — $${fine}` });
+      pushEv(state, { type: 'sfx', name: 'busted' });
+    },
+
+    _pickSpot(state, minD, maxD) {
+      const p = state.player;
+      for (let i = 0; i < 10; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = minD + Math.random() * (maxD - minD);
+        const x = clamp(p.x + Math.sin(a) * d, -195, 195);
+        const z = clamp(p.z + Math.cos(a) * d, -195, 195);
+        if (!inCollider(state, x, z, 3)) return { x, z };
+      }
+      return { x: clamp(p.x + 45, -195, 195), z: clamp(p.z, -195, 195) };
+    },
+
+    step(dt, state) {
+      api._state = state;
+      state.wanted = api.wanted;
+      const p = state.player;
+      if (!p) return;
+      const W = CONFIG.WANTED;
+      const want = api.desiredUnits();
+      const cars = policeCars(state);
+      const foot = cops(state);
+
+      // Spawn up to the desired strength, one unit per spawn tick.
+      api.spawnT -= dt;
+      if ((cars.length < want.cars || foot.length < want.foot) && api.spawnT <= 0) {
+        api.spawnT = 1.2;
+        const spot = api._pickSpot(state, 42, 60);
+        if (cars.length < want.cars) {
+          api.spawnCar(
+            state,
+            spot.x,
+            spot.z,
+            Math.atan2(p.x - spot.x, p.z - spot.z),
+          );
+        } else {
+          api.spawnCop(state, spot.x, spot.z);
+        }
+      }
+
+      // Trim excess units (furthest first), one per step.
+      if (cars.length > want.cars) {
+        const far = [...cars].sort(
+          (a, b) => distTo(b.x, b.z, p.x, p.z) - distTo(a.x, a.z, p.x, p.z),
+        )[0];
+        state.cars.splice(state.cars.indexOf(far), 1);
+      } else if (foot.length > want.foot) {
+        const far = [...foot].sort(
+          (a, b) => distTo(b.x, b.z, p.x, p.z) - distTo(a.x, a.z, p.x, p.z),
+        )[0];
+        state.peds.splice(state.peds.indexOf(far), 1);
+      }
+
+      // Pursuit.
+      for (const car of policeCars(state)) api.pursueCar(dt, state, car);
+      for (const cop of cops(state)) api.pursueCop(dt, state, cop);
+
+      // Sight + decay: 15 s out of police sight, then -1 star per 10 s.
+      const near =
+        policeCars(state).some((c) => distTo(c.x, c.z, p.x, p.z) < 60) ||
+        cops(state).some((c) => distTo(c.x, c.z, p.x, p.z) < 60);
+      state.policeNear = near;
+      if (near) {
+        api.lastSeenAt = state.time;
+        api.nextDecayAt = 0;
+      } else if (api.wanted > 0 && state.time - api.lastSeenAt > (W.DECAY_SIGHT_LOST ?? 15)) {
+        if (!api.nextDecayAt) api.nextDecayAt = state.time + (W.DECAY_PER_STAR ?? 10);
+        if (state.time >= api.nextDecayAt) {
+          api.wanted = Math.max(0, api.wanted - 1);
+          api.heat = api.wanted;
+          api.nextDecayAt = state.time + (W.DECAY_PER_STAR ?? 10);
+          pushEv(state, {
+            type: 'wanted',
+            text:
+              api.wanted > 0
+                ? `Heat cooling off — ${stars(api.wanted)}`
+                : 'You lost the cops. Heat is off.',
+          });
+          state.wanted = api.wanted;
+        }
+      }
+
+      // Roadblock at 3+ stars: two cruisers parked across the road ahead.
+      if (api.wanted >= 3) {
+        api.roadblockT -= dt;
+        if (api.roadblockT <= 0) {
+          api.roadblockT = 25 + Math.random() * 10;
+          const hd = p.heading ?? 0;
+          const fx = Math.sin(hd);
+          const fz = Math.cos(hd);
+          const px = -fz;
+          const pz = fx;
+          for (const s of [-1, 1]) {
+            const car = api.spawnCar(
+              state,
+              p.x + fx * 26 + px * 4 * s,
+              p.z + fz * 26 + pz * 4 * s,
+              hd + Math.PI / 2,
+            );
+            if (car) {
+              car._rbT = state.time + 6;
+              car.speed = 0;
+            }
+          }
+          pushEv(state, { type: 'roadblock', text: 'Roadblock ahead!' });
+        }
+      } else {
+        api.roadblockT = Math.min(api.roadblockT, 20);
+      }
+
+      // Bust check: on foot, a cop within 3 m for 2 s; in a car, speed < 2
+      // with a police car within 4 m for 3 s.
+      if (api.wanted > 0) {
+        let caught = false;
+        if (p.onFoot) {
+          caught = cops(state).some(
+            (c) => distTo(c.x, c.z, p.x, p.z) < (W.BUST_FOOT_RANGE ?? 3),
+          );
+          api.bustT = caught ? api.bustT + dt : 0;
+          if (api.bustT >= (W.BUST_FOOT_TIME ?? 2)) api.bust(state);
+        } else if (p.car) {
+          const slow = (p.car.speed ?? 0) < (W.BUST_CAR_SPEED ?? 2);
+          caught =
+            slow &&
+            policeCars(state).some(
+              (c) => distTo(c.x, c.z, p.x, p.z) < (W.BUST_CAR_RANGE ?? 4),
+            );
+          api.bustT = caught ? api.bustT + dt : 0;
+          if (api.bustT >= (W.BUST_CAR_TIME ?? 3)) api.bust(state);
+        } else {
+          api.bustT = 0;
+        }
+      } else {
+        api.bustT = 0;
+      }
+    },
+  };
+  return api;
 }

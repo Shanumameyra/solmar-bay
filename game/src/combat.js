@@ -1,316 +1,346 @@
-// Solmar Bay — combat (Worker B). Fists + pistol, cop retaliation, medkits,
-// ammo shop, death -> WASTED -> hospital respawn. No gore: hit reactions are
-// stagger + stars, never blood.
-// Input contract: input.justPressed holds KeyboardEvent.code edges plus
-// 'Mouse0' on left click (see NOTES.md input contract). world.step passes
-// the RAW input object to combat.step; player.js never touches combat keys.
+// combat.js — fists, pistol, cop attacks, medkits and the gun shop.
+//
+// Owns weapon/ammo/reserveAmmo and mirrors them onto the player each step.
+// Reload draws from reserveAmmo (bought at the gun shop) — it is NOT free.
+// HP math uses ?? (never ||): a dead player at 0 HP must stay dead, not
+// resurrect to 100 on the next hit.
 
 import { CONFIG } from './config.js';
 
-const PUNCH_RANGE = CONFIG.PLAYER.PUNCH_RANGE; // 2.0
-const PUNCH_DMG = CONFIG.PLAYER.PUNCH_DAMAGE; // 15
-const PUNCH_CD = CONFIG.PLAYER.PUNCH_COOLDOWN; // 0.4
-const PISTOL_DMG = CONFIG.COMBAT.PISTOL_DAMAGE; // 25
-const PISTOL_MAG = CONFIG.COMBAT.PISTOL_MAG; // 12
-const PISTOL_RANGE = CONFIG.COMBAT.PISTOL_RANGE; // 40
-const PISTOL_FULL_RANGE = CONFIG.COMBAT.PISTOL_FALLOFF; // 30
-const RELOAD_TIME = CONFIG.COMBAT.RELOAD_TIME; // 1.2
-const AMMO_PRICE = CONFIG.COMBAT.AMMO_PRICE; // 50
-const AMMO_PACK = CONFIG.COMBAT.AMMO_PER_BUY; // 12
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+function angDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function distTo(ax, az, bx, bz) {
+  return Math.hypot(ax - bx, az - bz);
+}
+
+function pushEvent(state, ev) {
+  if (state && Array.isArray(state.events)) {
+    state.events.push({ t: state.time ?? 0, ...ev });
+  }
+}
+
+function landmark(state, key) {
+  return (
+    (state.landmarks && state.landmarks[key]) ||
+    (CONFIG.LANDMARKS && CONFIG.LANDMARKS[key]) || { x: 0, z: 0 }
+  );
+}
 
 export function createCombat() {
-  const combat = {
-    weapon: 'fists',
-    ammo: 0,
+  const C = CONFIG.COMBAT;
+  const api = {
+    weapon: 'fists', // 'fists' | 'pistol'
+    ammo: 0, // rounds in the mag (pistol starts empty — buy ammo first)
     reserveAmmo: 0,
     punchCd: 0,
     reloadT: 0,
     copHitT: 0,
-    healCd: { cafe: 0, hospital: 0 },
+    healCd: 0,
     shopCd: 0,
     muzzleT: 0,
 
     reset() {
-      this.weapon = 'fists';
-      this.ammo = 0;
-      this.reserveAmmo = 0;
-      this.punchCd = 0;
-      this.reloadT = 0;
-      this.copHitT = 0;
-      this.healCd = { cafe: 0, hospital: 0 };
-      this.shopCd = 0;
-      this.muzzleT = 0;
+      api.weapon = 'fists';
+      api.ammo = 0;
+      api.reserveAmmo = 0;
+      api.punchCd = 0;
+      api.reloadT = 0;
+      api.copHitT = 0;
+      api.healCd = 0;
+      api.shopCd = 0;
+      api.muzzleT = 0;
     },
 
-    step(dt, state, input) {
-      if (!state || !state.player) return;
-      const player = state.player;
-      if (this.punchCd > 0) this.punchCd -= dt;
-      if (this.muzzleT > 0) this.muzzleT -= dt;
-      if (this.shopCd > 0) this.shopCd -= dt;
-      for (const k of Object.keys(this.healCd)) {
-        if (this.healCd[k] > 0) this.healCd[k] -= dt;
-      }
-      if (this.reloadT > 0) {
-        this.reloadT -= dt;
-        if (this.reloadT <= 0) {
-          const need = PISTOL_MAG - this.ammo;
-          const take = Math.min(need, this.reserveAmmo);
-          this.ammo += take;
-          this.reserveAmmo -= take;
-          pushEvent(state, 'info', take > 0 ? 'Reloaded' : 'No reserve ammo — buy more at the gun shop');
-        }
-      }
-      // Mirror weapon state onto the player for HUD/render (even with no input).
-      player.weapon = this.weapon;
-      player.ammo = this.ammo;
-      player.reserveAmmo = this.reserveAmmo;
-      // Death: any path that zeroes the player's HP (world.damagePlayer,
-      // cop attacks) triggers the WASTED flow once. die() restores HP to
-      // full and sets screen 'wasted', so this cannot re-fire.
-      if (player.hp <= 0 && state.screen !== 'wasted') {
-        this.die(state);
-        return;
-      }
-      if (!input) return;
-      const jp = input.justPressed || new Set();
-      if (jp.has('Digit1')) { this.weapon = 'fists'; pushEvent(state, 'info', 'Fists'); }
-      if (jp.has('Digit2')) {
-        if (this.ammo > 0 || this.reserveAmmo > 0) { this.weapon = 'pistol'; pushEvent(state, 'info', 'Pistol'); }
-        else pushEvent(state, 'info', 'No pistol yet — buy one at the gun shop ($50)');
-      }
-      if (jp.has('KeyF')) this.punch(state);
-      if (jp.has('KeyR')) this.reload(state);
-      if (jp.has('Mouse0') && this.weapon === 'pistol') this.shoot(state);
-      this.copAttack(dt, state);
-      this.medkitCheck(dt, state);
-      this.ammoShopCheck(dt, state);
-    },
-
-    punch(state) {
-      if (this.punchCd > 0 || this.reloadT > 0) return;
-      const player = state.player;
-      this.punchCd = PUNCH_CD;
-      const target = this.nearestInCone(state, PUNCH_RANGE, 1.1);
-      pushEvent(state, 'sfx', 'punch');
-      state.fxBurst = { type: 'stars', x: player.x + Math.sin(player.yaw) * 1.5, y: 1.4, z: player.z + Math.cos(player.yaw) * 1.5 };
-      if (!target) return;
-      this.damagePed(state, target, PUNCH_DMG, 'punch');
-      // Knockback: shove the ped away from the player.
-      const dx = target.x - player.x;
-      const dz = target.z - player.z;
-      const d = Math.hypot(dx, dz) || 0.001;
-      target.x += (dx / d) * 2;
-      target.z += (dz / d) * 2;
-      target.state = 'flee';
-      target.fleeT = 3;
-      state.shakeTrauma = Math.min(1, (state.shakeTrauma || 0) + 0.12);
-    },
-
-    shoot(state) {
-      if (this.reloadT > 0) return;
-      const player = state.player;
-      if (this.ammo <= 0) {
-        pushEvent(state, 'sfx', 'click');
-        pushEvent(state, 'info', 'Empty — press R to reload');
-        this.reload(state);
-        return;
-      }
-      this.ammo -= 1;
-      state.stats.shotsFired = (state.stats.shotsFired || 0) + 1;
-      this.muzzleT = 0.08;
-      pushEvent(state, 'sfx', 'gunshot');
-      const fx = Math.sin(player.yaw);
-      const fz = Math.cos(player.yaw);
-      state.fxBurst = { type: 'flash', x: player.x + fx * 1.2, y: 1.5, z: player.z + fz * 1.2 };
-      const target = this.nearestInCone(state, PISTOL_RANGE, 0.14);
-      if (target) {
-        const dist = Math.hypot(target.x - player.x, target.z - player.z);
-        const falloff = dist <= PISTOL_FULL_RANGE
-          ? 1 : Math.max(0.5, 1 - (dist - PISTOL_FULL_RANGE) / (PISTOL_RANGE - PISTOL_FULL_RANGE) * 0.5);
-        state.stats.shotsHit = (state.stats.shotsHit || 0) + 1;
-        this.damagePed(state, target, Math.round(PISTOL_DMG * falloff), 'shot');
-      }
-      // Gunfire near police draws heat.
-      const police = state.systems && state.systems.police;
-      if (police) {
-        const near = (state.cars || []).some((c) => c.isPolice
-          && Math.hypot(c.x - player.x, c.z - player.z) < 40)
-          || (state.peds || []).some((p) => p.isCop
-            && Math.hypot(p.x - player.x, p.z - player.z) < 40);
-        if (near) police.addHeat(CONFIG.WANTED.HEAT.SHOT_NEAR_POLICE, 'shot', state);
-      }
-    },
-
-    reload(state) {
-      if (this.reloadT > 0 || this.ammo >= PISTOL_MAG) return;
-      if (this.reserveAmmo <= 0) {
-        pushEvent(state, 'info', 'No reserve ammo — buy more at the gun shop ($50)');
-        return;
-      }
-      this.reloadT = RELOAD_TIME;
-      pushEvent(state, 'info', 'Reloading…');
-    },
-
-    damagePed(state, ped, dmg, kind) {
-      // ?? not ||: hp 0 is a real value (down), and (0 || 100) would
-      // resurrect a downed ped to ~100 HP on a second hit.
-      ped.hp = (ped.hp ?? 100) - dmg;
-      state.fxBurst = { type: 'stars', x: ped.x, y: 1.4, z: ped.z };
-      if (ped.isCop) {
-        // Hitting a cop is a crime.
-        const police = state.systems && state.systems.police;
-        if (police && kind === 'punch') police.addHeat(1, 'assault', state);
-      } else if (kind === 'punch' || kind === 'shot') {
-        // Hitting a pedestrian draws heat too.
-        const police = state.systems && state.systems.police;
-        if (police) police.addHeat(CONFIG.WANTED.HEAT.HIT_PED, 'ped', state);
-      }
-      if (ped.hp <= 0) {
-        if (ped.isCop) {
-          // Cop down: he stays down, heat rises.
-          ped.state = 'down';
-          ped.hp = 0;
-          const police = state.systems && state.systems.police;
-          if (police) police.addHeat(CONFIG.WANTED.HEAT.KILL_COP, 'cop down', state);
-          pushEvent(state, 'info', 'Cop down — the SBPD will not forget this');
-        } else {
-          ped.state = 'down';
-          ped.hp = 0;
-          pushEvent(state, 'info', 'Pedestrian down — witnesses called it in');
-        }
-        ped.downT = 20;
-      } else {
-        ped.state = 'flee';
-        ped.fleeT = 3;
-      }
-    },
-
-    copAttack(dt, state) {
-      const player = state.player;
-      this.copHitT -= dt;
-      if (this.copHitT > 0) return;
-      const peds = state.peds || [];
-      for (const p of peds) {
-        if (!p.isCop || p.state === 'down') continue;
-        const d = Math.hypot(p.x - player.x, p.z - player.z);
-        if (d < 2.0 && !player.inCar) {
-          this.copHitT = 1.0;
-          this.damagePlayer(state, 8, 'cop');
-          return;
-        }
-      }
-    },
-
-    damagePlayer(state, dmg, source) {
-      const player = state.player;
-      // ?? not ||: hp 0 is a real value, and (0 || 100) would resurrect a
-      // dead player to ~100 HP on a second hit in the same frame.
-      player.hp = Math.max(0, (player.hp ?? 100) - dmg);
-      state.health = player.hp;
-      state.shakeTrauma = Math.min(1, (state.shakeTrauma || 0) + 0.25);
-      pushEvent(state, 'sfx', 'punch');
-      if (player.hp <= 0) this.die(state);
-    },
-
-    die(state) {
-      const player = state.player;
-      const lost = Math.min(state.money || 0, CONFIG.COMBAT.DEATH_FINE);
-      state.money = Math.max(0, (state.money || 0) - CONFIG.COMBAT.DEATH_FINE);
-      state.stats.deaths = (state.stats.deaths || 0) + 1;
-      // Clear the heat: the cops stop chasing a dead man.
-      const police = state.systems && state.systems.police;
-      if (police) police.reset();
-      state.wanted = 0;
-      // A wasted mission fails (missions.js re-arms at the café).
-      if (state.systems && state.systems.missions && state.systems.missions.phase === 'active') {
-        state.systems.missions.fail(state, 'Wasted — the job fell through');
-      }
-      const hospital = (state.landmarks && state.landmarks.hospital)
-        || (state.spawnPoints && state.spawnPoints.hospital)
-        || { x: 0, z: 0 };
-      const pcar = player.carId != null
-        ? (state.cars || []).find((c) => c.id === player.carId) : null;
-      if (pcar) pcar.driver = null;
-      // Fully get out of the car (see police.js bust): otherwise stepPlayer
-      // syncs the player back to the wrecked car's position next step.
-      player.car = null;
-      player.carId = null;
-      player.inCar = false;
-      player.onFoot = true;
-      player.x = hospital.x;
-      player.z = hospital.z;
-      player.hp = player.maxHp || 100;
-      state.health = player.hp;
-      player.speed = 0;
-      this.ammo = PISTOL_MAG;
-      state.screen = 'wasted';
-      state.screenT = 2.5;
-      pushEvent(state, 'wasted', `WASTED — you lost $${lost}`);
-      pushEvent(state, 'sfx', 'wasted');
-    },
-
-    medkitCheck(dt, state) {
-      const player = state.player;
-      if ((player.hp || 100) >= (player.maxHp || 100)) return;
-      for (const spot of ['cafe', 'hospital']) {
-        const lm = (state.landmarks && state.landmarks[spot])
-          || (state.spawnPoints && state.spawnPoints[spot]);
-        if (!lm) continue;
-        if (this.healCd[spot] > 0) continue;
-        if (Math.hypot(player.x - lm.x, player.z - lm.z) < 5) {
-          this.healCd[spot] = 10;
-          player.hp = Math.min(player.maxHp || 100, (player.hp || 0) + CONFIG.COMBAT.MEDKIT_HEAL);
-          state.health = player.hp;
-          pushEvent(state, 'heal', `Patched up +${CONFIG.COMBAT.MEDKIT_HEAL} HP (${spot === 'cafe' ? "Rosa's" : 'hospital'})`);
-          pushEvent(state, 'sfx', 'heal');
-        }
-      }
-    },
-
-    ammoShopCheck(dt, state) {
-      const player = state.player;
-      if (this.shopCd > 0) return;
-      if (this.reserveAmmo >= 36) return;
-      if ((state.money || 0) < AMMO_PRICE) return;
-      const shop = (state.landmarks && state.landmarks.gunshop)
-        || (state.spawnPoints && state.spawnPoints.gunshop);
-      if (!shop) return;
-      if (Math.hypot(player.x - shop.x, player.z - shop.z) < 5) {
-        this.shopCd = 5;
-        state.money -= AMMO_PRICE;
-        this.reserveAmmo += AMMO_PACK;
-        pushEvent(state, 'cash', `Bought ${AMMO_PACK} rounds -$${AMMO_PRICE}`);
-        pushEvent(state, 'sfx', 'cash');
-      }
-    },
-
+    // Nearest living ped inside a forward cone (range, half-angle).
     nearestInCone(state, range, halfAngle) {
-      const player = state.player;
-      const peds = state.peds || [];
+      const p = state.player;
+      if (!p) return null;
+      const facing = p.onFoot ? p.yaw : p.car ? p.car.angle : p.yaw;
       let best = null;
-      let bestD = range;
-      for (const p of peds) {
-        if (p.state === 'down') continue;
-        const dx = p.x - player.x;
-        const dz = p.z - player.z;
+      let bestD = Infinity;
+      for (const ped of state.peds || []) {
+        if ((ped.hp ?? 100) <= 0 || ped.state === 'down') continue;
+        const dx = ped.x - p.x;
+        const dz = ped.z - p.z;
         const d = Math.hypot(dx, dz);
-        if (d > range || d < 0.01) continue;
-        const ang = Math.atan2(dx, dz);
-        let diff = ang - (player.yaw || 0);
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        if (Math.abs(diff) > halfAngle) continue;
-        if (d < bestD) { bestD = d; best = p; }
+        if (d > range) continue;
+        if (Math.abs(angDiff(Math.atan2(dx, dz), facing)) > halfAngle) continue;
+        if (d < bestD) {
+          bestD = d;
+          best = ped;
+        }
       }
       return best;
     },
-  };
-  return combat;
-}
 
-function pushEvent(state, type, text) {
-  if (!state.events) state.events = [];
-  if (state.events.length > 24) state.events.shift();
-  state.events.push({ type, text, t: state.time || 0 });
+    // Nearest police car inside a forward cone (for pistol shots at cars).
+    nearestCarInCone(state, range, halfAngle) {
+      const p = state.player;
+      if (!p) return null;
+      const facing = p.onFoot ? p.yaw : p.car ? p.car.angle : p.yaw;
+      let best = null;
+      let bestD = Infinity;
+      for (const car of state.cars || []) {
+        if (!car.isPolice || (car.hp ?? 100) <= 0) continue;
+        if (p.car && car.id === p.car.id) continue;
+        const dx = car.x - p.x;
+        const dz = car.z - p.z;
+        const d = Math.hypot(dx, dz);
+        if (d > range) continue;
+        if (Math.abs(angDiff(Math.atan2(dx, dz), facing)) > halfAngle) continue;
+        if (d < bestD) {
+          bestD = d;
+          best = car;
+        }
+      }
+      return best;
+    },
+
+    damagePed(ped, dmg, state) {
+      ped.hp = (ped.hp ?? 100) - dmg;
+      if (ped.hp <= 0) {
+        ped.hp = 0;
+        ped.state = 'down';
+        // Civilians get back up after downT; cops stay down.
+        ped.downT = ped.isCop ? 1e9 : 8;
+        if (ped.isCop) {
+          state.systems?.police?.addHeat?.(2, 'cop down', state);
+          pushEvent(state, { type: 'feed', text: 'Cop down! +2 stars' });
+        }
+      }
+    },
+
+    damagePlayer(n, state) {
+      const p = state.player;
+      if (!p) return;
+      p.hp = (p.hp ?? 100) - n;
+      if (p.hp < 0) p.hp = 0;
+      state.health = p.hp;
+      pushEvent(state, { type: 'damage' });
+      if (p.hp <= 0 && state.screen !== 'wasted' && state.screen !== 'busted') {
+        api.die(state);
+      }
+    },
+
+    // WASTED: respawn at the hospital, lose $100. Clears player.car AND
+    // sets onFoot — otherwise stepPlayer syncs the position back to the
+    // wrecked car and the respawn never happens.
+    die(state) {
+      if (state.screen === 'wasted') return;
+      const fine = Math.min(state.money ?? 0, C.DEATH_FINE ?? 100);
+      state.money = (state.money ?? 0) - fine;
+      if (state.stats) state.stats.deaths = (state.stats.deaths ?? 0) + 1;
+      const hosp =
+        state.landmarks?.hospital || CONFIG.LANDMARKS?.hospital || { x: 144, z: -72 };
+      const p = state.player;
+      if (p.car) p.car.driver = null;
+      p.car = null;
+      p.carId = null;
+      p.inCar = false;
+      p.onFoot = true;
+      p.x = hosp.x;
+      p.z = hosp.z;
+      p.heading = Math.PI;
+      p.yaw = Math.PI;
+      p.speed = 0;
+      p.hp = p.maxHp ?? 100;
+      state.health = p.hp;
+      p.invuln = 3;
+      state.screen = 'wasted';
+      state.screenT = 2.5;
+      pushEvent(state, { type: 'wasted', text: `WASTED — -$${fine}` });
+      pushEvent(state, { type: 'sfx', name: 'busted' });
+      state.fxBurst = { type: 'smoke', x: p.x, y: 1.5, z: p.z };
+    },
+
+    punch(state) {
+      if (api.punchCd > 0) return false;
+      api.punchCd = CONFIG.PLAYER.PUNCH_COOLDOWN ?? 0.4;
+      pushEvent(state, { type: 'sfx', name: 'punch' });
+      const p = state.player;
+      const target = api.nearestInCone(state, CONFIG.PLAYER.PUNCH_RANGE ?? 2.0, 1.1);
+      if (!target) return true;
+      api.damagePed(target, CONFIG.PLAYER.PUNCH_DAMAGE ?? 15, state);
+      // Knockback: shove the ped away from the player; they flee.
+      const dx = target.x - p.x;
+      const dz = target.z - p.z;
+      const d = Math.hypot(dx, dz) || 0.001;
+      target.x += (dx / d) * 2.5;
+      target.z += (dz / d) * 2.5;
+      target.state = 'flee';
+      target.flee = true;
+      target.fleeT = 2;
+      target.fleeFrom = { x: p.x, z: p.z };
+      state.fxBurst = { type: 'sparks', x: target.x, y: 1.4, z: target.z };
+      state.shakeTrauma = Math.min(1, (state.shakeTrauma ?? 0) + 0.15);
+      return true;
+    },
+
+    shoot(state) {
+      if (api.weapon !== 'pistol') return false;
+      if (api.reloadT > 0) return false;
+      if (api.ammo <= 0) {
+        pushEvent(state, { type: 'sfx', name: 'click' });
+        api.reload(state);
+        return false;
+      }
+      api.ammo--;
+      api.muzzleT = 0.08;
+      if (state.stats) state.stats.shotsFired = (state.stats.shotsFired ?? 0) + 1;
+      const p = state.player;
+      const facing = p.onFoot ? p.yaw : p.car ? p.car.angle : p.yaw;
+      const mx = p.x + Math.sin(facing) * 1.2;
+      const mz = p.z + Math.cos(facing) * 1.2;
+      state.fxBurst = { type: 'muzzle', x: mx, y: 1.4, z: mz };
+      pushEvent(state, { type: 'sfx', name: 'gunshot' });
+      state.shakeTrauma = Math.min(1, (state.shakeTrauma ?? 0) + 0.12);
+      // Noise: a shot near police raises heat.
+      const policeNear = (state.cars || []).some(
+        (c) => c.isPolice && distTo(c.x, c.z, p.x, p.z) < 60,
+      );
+      if (policeNear) state.systems?.police?.addHeat?.(1, 'gunshot heard', state);
+      // Nearby peds flee the gunfire.
+      for (const ped of state.peds || []) {
+        if (!ped.isCop && distTo(ped.x, ped.z, p.x, p.z) < 18) {
+          ped.state = 'flee';
+          ped.flee = true;
+          ped.fleeT = 3;
+          ped.fleeFrom = { x: p.x, z: p.z };
+        }
+      }
+      // Hit: nearest ped or police car in the cone, damage falls off past 30 m.
+      const range = C.PISTOL_RANGE ?? 40;
+      const ped = api.nearestInCone(state, range, 0.35);
+      const car = api.nearestCarInCone(state, range, 0.35);
+      const pd = ped ? distTo(ped.x, ped.z, p.x, p.z) : Infinity;
+      const cd = car ? distTo(car.x, car.z, p.x, p.z) : Infinity;
+      const d = Math.min(pd, cd);
+      if (d === Infinity) return true;
+      const dmg =
+        d <= (C.PISTOL_FALLOFF ?? 30)
+          ? C.PISTOL_DAMAGE ?? 25
+          : Math.max(10, Math.round((C.PISTOL_DAMAGE ?? 25) - (d - (C.PISTOL_FALLOFF ?? 30)) * 0.8));
+      if (state.stats) state.stats.shotsHit = (state.stats.shotsHit ?? 0) + 1;
+      if (pd <= cd) {
+        api.damagePed(ped, dmg, state);
+      } else {
+        car.hp = Math.max(0, (car.hp ?? 100) - dmg);
+        if (car.hp <= 0) {
+          car.stalled = true;
+          car.speed = 0;
+          pushEvent(state, { type: 'feed', text: 'Police car disabled!' });
+        }
+      }
+      return true;
+    },
+
+    reload(state) {
+      if (api.reloadT > 0) return false;
+      if (api.ammo >= (C.PISTOL_MAG ?? 12)) return false;
+      if (api.reserveAmmo <= 0) {
+        pushEvent(state, {
+          type: 'feed',
+          text: 'No reserve ammo — buy more at the gun shop',
+        });
+        return false;
+      }
+      api.reloadT = C.RELOAD_TIME ?? 1.2;
+      return true;
+    },
+
+    copAttack(dt, state) {
+      const p = state.player;
+      if (!p || (p.hp ?? 100) <= 0) return;
+      api.copHitT -= dt;
+      if (api.copHitT > 0) return;
+      const near = (state.peds || []).some(
+        (c) => c.isCop && c.state !== 'down' && distTo(c.x, c.z, p.x, p.z) < 1.9,
+      );
+      if (!near) return;
+      api.copHitT = 0.9;
+      api.damagePlayer(8, state);
+    },
+
+    // Walk over the café or hospital to heal +50 (throttled).
+    medkitCheck(state) {
+      const p = state.player;
+      if (!p || (p.hp ?? 100) >= (p.maxHp ?? 100)) return;
+      api.healCd -= 1 / 60;
+      if (api.healCd > 0) return;
+      const cafe = landmark(state, 'cafe');
+      const hosp = landmark(state, 'hospital');
+      const near =
+        distTo(p.x, p.z, cafe.x, cafe.z) < 5 || distTo(p.x, p.z, hosp.x, hosp.z) < 5;
+      if (!near) return;
+      p.hp = Math.min(p.maxHp ?? 100, p.hp + (C.MEDKIT_HEAL ?? 50));
+      state.health = p.hp;
+      api.healCd = 5;
+      pushEvent(state, { type: 'heal', text: `Patched up +${C.MEDKIT_HEAL ?? 50} HP` });
+      state.fxBurst = { type: 'glint', x: p.x, y: 1.6, z: p.z };
+    },
+
+    // Walk over the gun shop to buy 12 reserve rounds for $50 (throttled).
+    ammoShopCheck(state) {
+      api.shopCd -= 1 / 60;
+      if (api.shopCd > 0) return;
+      if ((state.money ?? 0) < (C.AMMO_PRICE ?? 50)) return;
+      if (api.reserveAmmo >= (C.AMMO_PER_BUY ?? 12) * 2) return;
+      const p = state.player;
+      if (!p) return;
+      const shop = landmark(state, 'gunshop');
+      if (distTo(p.x, p.z, shop.x, shop.z) >= 5) return;
+      state.money -= C.AMMO_PRICE ?? 50;
+      api.reserveAmmo += C.AMMO_PER_BUY ?? 12;
+      api.shopCd = 10;
+      pushEvent(state, {
+        type: 'ammo',
+        text: `Bought ${C.AMMO_PER_BUY ?? 12} rounds — $${C.AMMO_PRICE ?? 50}`,
+      });
+    },
+
+    step(dt, state, input) {
+      api.punchCd = Math.max(0, api.punchCd - dt);
+      api.muzzleT = Math.max(0, api.muzzleT - dt);
+      if (api.reloadT > 0) {
+        api.reloadT -= dt;
+        if (api.reloadT <= 0) {
+          api.reloadT = 0;
+          const want = (C.PISTOL_MAG ?? 12) - api.ammo;
+          const take = Math.min(want, api.reserveAmmo);
+          api.ammo += take;
+          api.reserveAmmo -= take;
+          pushEvent(state, { type: 'sfx', name: 'reload' });
+        }
+      }
+      const p = state.player;
+      if (p) {
+        p.weapon = api.weapon;
+        p.ammo = api.ammo;
+        p.reserveAmmo = api.reserveAmmo;
+      }
+      const jp = input && input.justPressed;
+      if (jp) {
+        if (jp.has('Digit1')) api.weapon = 'fists';
+        if (jp.has('Digit2')) api.weapon = 'pistol';
+        if (jp.has('KeyF')) api.punch(state);
+        if (jp.has('Mouse0')) api.shoot(state);
+        if (jp.has('KeyR')) api.reload(state);
+      }
+      api.copAttack(dt, state);
+      api.medkitCheck(state);
+      api.ammoShopCheck(state);
+      // Death check: ANY path that zeroes HP triggers WASTED.
+      if (p && (p.hp ?? 100) <= 0 && state.screen !== 'wasted' && state.screen !== 'busted') {
+        api.die(state);
+      }
+    },
+  };
+  return api;
 }
