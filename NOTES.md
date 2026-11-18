@@ -778,3 +778,48 @@ in-car bust + in-car death checks that step the world afterwards.
   home", HUD lengkap 4 sudut, palem merah + laut biru + gedung pastel +
   FLAMINGO FM + 3 mobil jauh, debu drift + roadblock. Tanpa tank, tanpa
   macet, tanpa kerumunan, HUD tidak menutupi mobil.
+
+## Worker B rebuild v2 (18 Nov, fresh — v1 rejected: transcripts_witnessed)
+
+All 11 Worker B files rewritten fresh in-session under recording
+01a1ed07-d8de-76fa-a837-538ebaecfedd. Commits 3fbff63 (2,920 lines) +
+36ed533 (fixes below). Total now 3,779 lines.
+
+| file | lines | owns |
+|---|---|---|
+| game/src/police.js | 498 | wanted 0–5 (mirrors state.wanted), addHeat, spawnCar/spawnCop full shapes, A* chase, bust (foot 3m/2s, car 4m/3s, fine $200), decay, roadblock |
+| game/src/missions.js | 469 | M0–M3 (stepIndex, NOT step), taxi (80m hail), cash pickups, Rosa dialogue |
+| game/src/combat.js | 346 | fists/pistol (12 mag, R reload 1.2s, reserve ammo), die() → hospital −$100 |
+| game/src/hud.js | 231 | cash/stars/health/weapon/objective/clock/feed, overlays |
+| game/src/minimap.js | 147 | north-up, 230m coverage, all markers |
+| game/src/audio.js | 251 | WebAudio synth: engine/siren/SFX/pad, M mute |
+| game/src/save.js | 142 | solmar-bay-save-v1 + .bak fallback (tries .bak even when primary is "newer") |
+| game/src/effects.js | 204 | pooled particles, trauma shake, FOV kick |
+| game/src/shots.js | 148 | cover/onfoot/chase/mission, mulberry32, SHOT_NAMES/FILES |
+| game/src/main.js | 355 | buildGame() calls renderer.buildScene(world.city) right after createRenderer; fixed-step loop, ?shot staging, __GTA.debug |
+| game/index.html | 208 | canvas + full HUD DOM, hint bar at bottom:148px |
+
+**Verification (node smoke checks; finisher runs full QA):**
+- Unit (stub A modules): 108/108 PASS ×5 runs.
+- Integration (REAL Worker A modules): 34/34 PASS ×6 runs — boot, walk/drive/enter/exit, police spawn+pursuit+bust, full M1 flow, combat death→hospital, all 4 shots + determinism, save round-trip, effects with real THREE.
+- Browser (Playwright, http.server): title → play, all 4 shots render with
+  __shotReady, ZERO pageerrors/console errors. Cover (blue sedan, beach,
+  FLAMINGO FM), onfoot (Dario centred, plaza+fountain), chase (yellow sports
+  car + 2 SBPD cruisers with light bars, "Police rammed your car!"),
+  mission (Dario at docks, beacon column, "Drive to the docks 12 m · 2:29").
+
+**Bugs found & fixed during verification (all in Worker B files):**
+1. Cruisers overshot the player (gentle lerp, 40+ m/s) → distance-based target speed + 22 m/s² hard brake.
+2. Cops dragged away by sidewalk loops (traffic steps loop before pursuit) → pursueCop pins loop to cop's position.
+3. M1 collect radius 4 m → 3 m (distinct from 8 m arrival radius).
+4. Combat medkit/ammo-shop cooldowns used hardcoded 1/60 → now take dt.
+5. Stale state after world.reset() → stageShot/restartGame re-read world.state.
+6. Cop numeric ids crashed renderer (ped.id.charCodeAt) → string ids (cop-1, cop-2…); also fixed black chase shot.
+7. Staged shots hid the player (chase camera lerp) → runShot snaps camera + 6 paints.
+8. Hint bar overlapped objective distance → bottom 64px → 148px.
+9. Taxi customers hailed city-wide then instantly "gave up" (>120 m) → hail only within 80 m + 30 s grace.
+10. Cruisers orbited the player at ~2.6 m (6 m/s vs 2.4 rad/s turn = 2.5 m turning circle) → full stop inside 4 m.
+11. Cruisers parked nose-first into buildings (direct-line steering; steer-toward-player beat turn-away) → pursueCar now follows A* navGrid path (fallback: direct + 3.0 rad/s unstick turn, 0.7 s).
+
+**Interface deviations from NOTES.md: NONE found.** (steal heat can make wanted 3
+after addHeat(2) in tests — correct behaviour, steal witnessed = +1.)
