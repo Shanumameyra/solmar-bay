@@ -99,14 +99,24 @@ export function buildGame() {
     autoSaveT: 0,
   };
 
+  // Live debug surface for tests / screenshots: the full state plus the
+  // derived fields the browser tests read (inCar, fps, policeCars,
+  // objective). paint() refreshes them every frame, so they never go
+  // stale after a reset or a teleport.
+  let fpsEma = 0;
   window.__GTA = {
     shotReady: false,
     screen: state.screen,
     wanted: state.wanted,
     money: state.money,
     mission: state.mission?.index ?? 0,
+    objective: state.mission?.objective ?? '',
     speed: 0,
     health: state.player?.hp ?? 100,
+    inCar: !state.player?.onFoot,
+    fps: 0,
+    policeCars: 0,
+    state,
     debug: {
       teleport: (x, z, angle, car) => world.teleport(x, z, angle, car),
       addHeat: (n, reason) => world.addHeat(n, reason),
@@ -249,11 +259,16 @@ export function buildGame() {
     renderer.draw(state, effects);
     effects.applyCamera(renderer.camera, dt);
     const g = window.__GTA;
+    g.state = state;
     g.screen = state.screen;
     g.wanted = state.wanted;
     g.money = state.money;
     g.mission = state.mission?.index ?? 0;
+    g.objective = state.mission?.objective ?? '';
     g.health = state.player?.hp ?? 100;
+    g.inCar = !state.player?.onFoot;
+    g.fps = Math.round(fpsEma);
+    g.policeCars = (state.cars || []).filter((c) => c.isPolice).length;
     const spd = state.player?.car
       ? state.player.car.speed ?? 0
       : state.player?.speed ?? 0;
@@ -286,6 +301,7 @@ export function buildGame() {
     requestAnimationFrame(frame);
     const dt = Math.min((now - frame._last) / 1000 || 0, MAX_FRAME);
     frame._last = now;
+    if (dt > 0) fpsEma = fpsEma ? fpsEma * 0.9 + (1 / dt) * 0.1 : 1 / dt;
     if (dt <= 0) {
       paint(0);
       return;

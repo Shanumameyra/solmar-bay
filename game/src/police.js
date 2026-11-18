@@ -104,6 +104,10 @@ export function createPolice() {
       const before = api.wanted;
       api.wanted = clamp(api.wanted + n, 0, CONFIG.WANTED.MAX_STARS ?? 5);
       api.heat = api.wanted;
+      // Mirror onto state.wanted right away (not only on the next step):
+      // callers that read the wanted level right after adding heat — the
+      // HUD, the bust check, the staged shots — must see the new value.
+      if (st) st.wanted = api.wanted;
       if (st) api.lastSeenAt = st.time ?? 0;
       api.nextDecayAt = 0;
       if (st && n > 0 && api.wanted !== before) {

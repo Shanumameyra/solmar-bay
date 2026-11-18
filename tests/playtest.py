@@ -1,9 +1,12 @@
 # Solmar Bay — browser playtest (python playwright, venv).
 # Run: ~/workspace/tools/pw-venv/bin/python tests/playtest.py
 # Requires the static server: node serve.ts  (serves game/ on :8080)
-# Boot smoke (title -> play), walk, enter a car, drive, wanted heat,
+# Boot smoke (title -> play), walk, enter a car, drive, exit, wanted heat,
 # mission start, HUD/minimap update, FPS. Fails on any pageerror or
 # console error, or if a step's assertion does not hold.
+# Reads the game through window.__GTA (see game/src/main.js): screen,
+# wanted, money, mission (index), objective (text), speed (km/h), inCar,
+# fps, policeCars, and the live state under __GTA.state.
 import asyncio
 import sys
 
@@ -34,7 +37,7 @@ async def main():
         await page.wait_for_timeout(1500)
         state = await gta(page)
         print(f"  screen={state['screen']} fps={state.get('fps')} money=${state['money']} "
-              f"mission={state['mission']!r}")
+              f"mission={state['mission']} objective={state.get('objective')!r}")
         if state["screen"] != "title":
             print("  FAIL: expected title screen"); ok = False
 
@@ -101,7 +104,7 @@ async def main():
             print("  (first E missed; retrying once)")
             await press_e()
             state = await gta(page)
-        print(f"  inCar={state['inCar']} speed={state['speed']:.1f}")
+        print(f"  inCar={state['inCar']} speed={state['speed']:.1f} km/h")
         if not state["inCar"]:
             print("  FAIL: E did not enter the car"); ok = False
 
@@ -129,7 +132,7 @@ async def main():
             await page.keyboard.up("KeyW")
             state = await gta(page)
             driven = await page.evaluate("window.__GTA.state.stats.distanceDriven")
-            print(f"  speed={state['speed']:.1f} m/s distanceDriven={driven:.1f} m")
+            print(f"  speed={state['speed']:.1f} km/h distanceDriven={driven:.1f} m")
             if not drove or driven < 10:
                 print("  FAIL: car barely drove"); ok = False
 
@@ -172,19 +175,21 @@ async def main():
         print(f"  wanted={state['wanted']} policeCars={state['policeCars']}")
         if state["wanted"] < 2:
             print("  FAIL: wanted did not rise"); ok = False
+        if state["policeCars"] < 1:
+            print("  FAIL: no police car spawned"); ok = False
 
         print("== mission start (debug startMission 1) ==")
         await page.evaluate("window.__GTA.debug.startMission(1)")
         # The world step that applies the mission can take >500 ms at
         # SwiftShader fps (~4): poll until the objective changes, up to 5 s.
-        mission = ""
+        objective = ""
         for _ in range(20):
             await page.wait_for_timeout(250)
-            mission = (await gta(page))["mission"]
-            if "docks" in mission.lower() or "pickup" in mission.lower():
+            objective = (await gta(page)).get("objective") or ""
+            if "docks" in objective.lower():
                 break
-        print(f"  mission={mission!r}")
-        if "docks" not in mission.lower() and "pickup" not in mission.lower():
+        print(f"  objective={objective!r}")
+        if "docks" not in objective.lower():
             print("  FAIL: mission objective did not change"); ok = False
 
         print("== HUD / minimap ==")
@@ -197,6 +202,8 @@ async def main():
         print(f"  cash={hud['cash']!r} objective={hud['objective']!r} stars={hud['stars']!r} minimap={hud['minimap']}")
         if not hud["cash"] or not hud["objective"]:
             print("  FAIL: HUD text missing"); ok = False
+        if "★★" not in (hud["stars"] or ""):
+            print("  FAIL: wanted stars do not show 2 stars"); ok = False
 
         print("== FPS ==")
         state = await gta(page)

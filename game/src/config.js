@@ -232,7 +232,12 @@ export const CONFIG = {
   LIGHTS: { SUN: 4.2, HEMI: 1.0, EXPOSURE: 1.32, FOG_NEAR: 200, FOG_FAR: 460 },
 
   // Bright golden-hour palette: light facades, warm sun, turquoise sea.
+  // SUN_INTENSITY / HEMI_INTENSITY live here too (not only top-level), so
+  // readers that look the light up through the palette find the same
+  // numbers the renderer uses (sun 4.2, hemi 1.0).
   PALETTE: {
+    SUN_INTENSITY: 4.2,
+    HEMI_INTENSITY: 1.0,
     skyTop: 0x3d1e55,
     skyHorizon: 0xff7a4a,
     sun: 0xffd9a0,

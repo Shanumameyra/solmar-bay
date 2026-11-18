@@ -99,7 +99,14 @@ export function stageShot(name, world, systems) {
     } else if (name === 'chase') {
       // 3 stars: yellow sports car south down the x=144 downtown street
       // (a clear run — the old diagonal start wedged into a tower),
-      // police cruisers flanking ahead, sirens on.
+      // police cruisers ahead, sirens on.
+      // Staging order matters: the cruisers pursue HEAD-ON (they drive
+      // north, straight at the player), so spawning them in the player's
+      // path first and then driving rams them at once — the car came out
+      // of 1.5 s at 26 km/h with hp 73. Instead: pre-drive the player
+      // alone for 90 steps (65 km/h, no police yet), THEN add the heat
+      // and spawn the cruisers 20-40 m ahead, and drive 30 more steps
+      // (86 km/h, hp 100, cruisers closing but not yet in contact).
       const car = createCar('sports', 144, -144, 0, {
         color: 0xffd21f,
         isParked: false,
@@ -107,11 +114,12 @@ export function stageShot(name, world, systems) {
       });
       car.color = 0xffd21f;
       putPlayerInCar(world, state, car, 144, -144, 0);
+      drive(90); // 1.5 s alone: 65 km/h at z ≈ -130, hp 100
       world.addHeat(3, 'staged chase');
-      systems.police.spawnCar(state, 138, -126, 0);
-      systems.police.spawnCar(state, 150, -120, 0);
-      systems.police.spawnCar(state, 144, -100, 0);
-      drive(90); // 1.5 s — mid-chase at speed, before the rams wreck the car
+      systems.police.spawnCar(state, 138, -100, 0);
+      systems.police.spawnCar(state, 150, -94, 0);
+      systems.police.spawnCar(state, 144, -82, 0);
+      drive(30); // 0.5 s more: 86 km/h, cruisers 21-39 m ahead
     } else if (name === 'mission') {
       // M1 at the docks: package marker glowing, Rosa's line on the HUD.
       systems.missions.start(1, state);
@@ -128,6 +136,7 @@ export function stageShot(name, world, systems) {
 
     const snap = {
       name,
+      ok: true,
       screen: state.screen,
       wanted: state.wanted,
       money: state.money,
@@ -136,6 +145,8 @@ export function stageShot(name, world, systems) {
       speed: Math.round(((state.player?.car?.speed ?? state.player?.speed ?? 0) * 3.6)),
       inCar: !state.player?.onFoot,
       health: state.player?.hp ?? 100,
+      policeCars: (state.cars || []).filter((c) => c.isPolice).length,
+      peds: (state.peds || []).length,
     };
     if (typeof window !== 'undefined') {
       window.__GTA = { ...(window.__GTA || {}), ...snap, shotReady: true };

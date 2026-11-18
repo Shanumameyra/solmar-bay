@@ -128,8 +128,8 @@ export function createHud(document) {
         }
       }
 
-      // Cash.
-      setText(els.cash, 'cash', `$${state.money ?? 0}`);
+      // Cash, with a thousands separator ($1,234, not $1234).
+      setText(els.cash, 'cash', `$${(state.money ?? 0).toLocaleString('en-US')}`);
 
       // Wanted stars (flashing while police are near).
       const w = state.wanted ?? 0;
@@ -195,7 +195,7 @@ export function createHud(document) {
         setText(
           els.titleStats,
           'tstats',
-          `Best cash $${state.stats.bestCash ?? 0} · Missions done ${state.stats.missionsDone ?? 0}`,
+          `Best cash $${(state.stats.bestCash ?? 0).toLocaleString('en-US')} · Missions done ${state.stats.missionsDone ?? 0}`,
         );
       }
 

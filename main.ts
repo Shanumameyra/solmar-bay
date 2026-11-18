@@ -1,67 +1,108 @@
-// Solmar Bay — the gta6-01 entry build (Node 22, standard library only).
-// The game is this directory's game/ folder: plain static files a desktop
-// browser loads offline (game/index.html and its ES modules, three.js vendored
-// under game/vendor/three/, no network request), and this program hands it in.
-// It copies game/ and screenshots/ from beside this file to /output and writes
-// /output/dossier.json, the summary the judge reads, with the vendored
-// make.fun library. Put 1-4 JPEG screenshots in screenshots/ (the first by name
-// is the cover) and run it.
+// Solmar Bay — entry point (Node 22, standard library only).
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-// Run it twice and diff the two outputs: the build is deterministic.
-
-import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Hands the game in: copies game/ and screenshots/ from this repository
+// into the output directory and writes dossier.json there with
+// buildDossier from vendor/makefun-game.ts.
+//
+//   MAKEFUN_OUTPUT_DIR=out node main.ts
+//
+// Outside the grader MAKEFUN_OUTPUT_DIR stands in for /output; with
+// neither set the program writes to /output. The run is deterministic:
+// the same repository always produces the same bytes — the output
+// directory is wiped first, entries are copied in sorted order, and the
+// dossier itself is a pure function of the copied files. Two runs into
+// two fresh directories are byte-identical.
+//
+// Guardrails (the kit gate's, enforced here before the dossier is built):
+// game/index.html must exist, and screenshots/ must hold at most 4
+// images — buildDossier refuses anything else, and this program fails
+// fast with a plain message instead of a half-written output.
+import { copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const REPO = dirname(fileURLToPath(import.meta.url));
+const OUT = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 
-// A screenshot-less entry is refused by the scorer and is a weak entry for the
-// judge anyway, so fail loudly instead of handing in an empty folder.
-const shotsDir = join(here, 'screenshots');
-const shotFiles = existsSync(shotsDir)
-  ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f) && !/^collage\./i.test(f))
-  : [];
-if (shotFiles.length === 0) {
-  throw new Error('screenshots/ is missing or has no PNG/JPEG files — run tests/shots.py first');
-}
-// The scorer refuses more than 4 screenshots; fail here with a clear
-// message instead of handing in an entry it would reject.
-if (shotFiles.length > 4) {
-  throw new Error(`screenshots/ has ${shotFiles.length} images (max 4) — remove the extras, the first 4 by name are the dossier`);
+// The gate's caps, from the kit's RULES.txt: dossier text 160 KiB, at
+// most 4 screenshots of at most 256 KiB each, game/ at most 993 entries
+// and 48 MiB, paths at most 1000 UTF-8 bytes.
+const CAPS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+};
+
+// Copy a tree of plain files and directories, entries in sorted order so
+// the walk is deterministic. A symlink or anything that is not a plain
+// file or directory is refused: the gate only accepts plain files.
+function copyTree(from: string, to: string): { files: number; bytes: number } {
+  const st = lstatSync(from);
+  if (!st.isDirectory()) throw new Error(`not a directory: ${from}`);
+  mkdirSync(to, { recursive: true });
+  let files = 0;
+  let bytes = 0;
+  for (const name of readdirSync(from).sort()) {
+    const src = join(from, name);
+    const dst = join(to, name);
+    const ent = lstatSync(src);
+    if (ent.isDirectory()) {
+      const sub = copyTree(src, dst);
+      files += sub.files;
+      bytes += sub.bytes;
+    } else if (ent.isFile()) {
+      copyFileSync(src, dst);
+      files += 1;
+      bytes += ent.size;
+    } else {
+      throw new Error(`refusing non-file entry: ${src}`);
+    }
+  }
+  return { files, bytes };
 }
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-// The entry is useless without its entry point: refuse a broken copy
-// instead of handing in a game folder the judge cannot open.
-if (!existsSync(join(out, 'game', 'index.html'))) {
-  throw new Error('game/index.html missing after copy — the game folder is incomplete');
+function countShots(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((n) => !n.startsWith('.'))
+    .sort();
 }
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-// The collage (collage.jpg) is a repo-only presentation image for the
-// author, not a dossier screenshot — keep it out of the submitted
-// output so the dossier holds exactly the staged screenshots.
-cpSync(shotsDir, join(out, 'screenshots'), {
-  recursive: true,
-  filter: (src) => !/^collage\./i.test(src.split('/').pop() ?? ''),
-});
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all, or a path under game/ over 1000 bytes: game/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
+const gameDir = join(REPO, 'game');
+const shotsDir = join(REPO, 'screenshots');
+
+if (!statSync(gameDir, { throwIfNoEntry: false })?.isDirectory()) {
+  throw new Error('game/ is missing from the repository');
+}
+if (!statSync(join(gameDir, 'index.html'), { throwIfNoEntry: false })?.isFile()) {
+  throw new Error('game/index.html is missing — the game has no entry page');
+}
+if (!statSync(shotsDir, { throwIfNoEntry: false })?.isDirectory()) {
+  throw new Error('screenshots/ is missing from the repository');
+}
+const shots = countShots(shotsDir);
+if (shots.length > CAPS.screenshots.max) {
+  throw new Error(
+    `screenshots/ holds ${shots.length} images, more than the ${CAPS.screenshots.max} the gate allows`,
+  );
+}
+
+// Fresh output every run: stale files from an earlier run would leak into
+// the dossier and break determinism.
+rmSync(OUT, { recursive: true, force: true });
+mkdirSync(OUT, { recursive: true });
+
+const game = copyTree(gameDir, join(OUT, 'game'));
+const shotCopy = copyTree(shotsDir, join(OUT, 'screenshots'));
+
+const dossier = buildDossier(OUT, CAPS);
+writeFileSync(join(OUT, 'dossier.json'), dossier);
+
+console.log(
+  `wrote ${OUT}: game/ ${game.files} files, ${game.bytes} bytes; ` +
+    `screenshots/ ${shotCopy.files} files (${shots.join(', ')}); ` +
+    `dossier.json ${dossier.length} bytes`,
 );

@@ -823,3 +823,85 @@ All 11 Worker B files rewritten fresh in-session under recording
 
 **Interface deviations from NOTES.md: NONE found.** (steal heat can make wanted 3
 after addHeat(2) in tests — correct behaviour, steal witnessed = +1.)
+
+## Finisher v2 (18 Nov, fresh — integration + QA + screenshots)
+
+All 9 pre-existing files rewritten in-session under recording
+01a1ed07-d8de-76fa-a837-538ebaecfedd: `main.ts`, `serve.ts`, `shots.json`,
+`README.md`, `NOTES.md` (this section), `tests/selftest.mjs`,
+`tests/shots.py`, `tests/playtest.py`, `tests/register-three.mjs`,
+`tests/three-hooks.mjs`. No `makefun login / submit / bundle` run; no
+recording started (recording 01a1ed07… still running, PID 7178).
+
+**Game fixes (small, targeted — A+B logic untouched):**
+1. `config.js`: `PALETTE` now carries `SUN_INTENSITY: 4.2` /
+   `HEMI_INTENSITY: 1.0` (same numbers as the top-level aliases) — the
+   selftest reads the light through the palette, and it was `undefined`.
+2. `police.js` `addHeat`: mirrors `state.wanted` synchronously, not only
+   on the next `step` — callers reading wanted right after adding heat
+   (HUD, bust check, staged shots) saw the old value.
+3. `shots.js` chase staging (variant D): cruisers pursue HEAD-ON, so
+   spawning them in the player's path first and then driving rammed the
+   car (26 km/h, hp 73 after 1.5 s). Now: pre-drive the player alone
+   90 steps (65 km/h, hp 100), THEN heat + 3 cruisers 20–40 m ahead,
+   drive 30 more steps → **86 km/h, hp 100, cruisers 21–39 m ahead**.
+   `stageShot` snap also gains `ok: true`, `policeCars`, `peds`
+   (tests + `__GTA` read them).
+4. `effects.js`: trauma/FOV decay and `applyCamera`'s offset math run
+   even headless (pure math, no scene needed); `applyCamera` now
+   RETURNS the applied `{x, y, roll}` offset instead of `undefined`.
+5. `hud.js`: cash formats with a thousands separator (`$1,234`).
+6. `main.js` `__GTA`: exposes the live `state` plus derived `inCar`,
+   `fps`, `policeCars`, `objective`, refreshed every `paint()` — the
+   browser tests drive through this surface.
+7. `missions.js` `complete()`: advances `api.index` to the pending
+   mission at once (was: stayed on the finished one). Real bug: the
+   save records `state.mission.index`, so saving after M1 and reloading
+   replayed M1 instead of M2. After M3 (no next) the index stays.
+   Note: completing M0 already raises `missionsDone` to 1 (the intro
+   counts as a mission done) — the M1 test counts the delta.
+
+**Test fixes (v1 test's premises were wrong for the v2 game):**
+- `stepN` plays the world first (`screen: 'title'` → `'play'`):
+  missions only progress once the game has started; busted/wasted
+  screens are left alone.
+- A* fountain: the fountain is at **(0, 12)** (basin collider
+  −4..4 / 8..16), not (0, 0) — `findPath(0,12,…)` is null, while the
+  (0, 0) intersection routes fine. Test fixed to the real location.
+- M1 flow: arrival (8 m) and collect (3 m) are distinct radii — the
+  test now arrives 5 m out (step 1), then steps onto the package
+  (step 2), then delivers.
+- Pistol: the shot hits the NEAREST ped in the cone (the punched ped
+  stood ~4 m ahead) — other peds are parked far away first; and at
+  wanted 0 `police.step` trims a flagged cop as excess before
+  `combat.step` runs, so the test raises heat to 3 first (tier 3 wants
+  2 foot cops).
+- `saveGame` returns boolean `true` (not `{ok: true}`); `main.ts` is
+  run via `process.execPath`, not bare `node`.
+
+**Screenshots (all 1280×720, ≤ 256 KiB, verified visually):**
+- `1-hero.jpg` 143.855 B — Romi's image (silver car, rear view),
+  resized 1600×900 → 1280×720 only, content untouched.
+- `2-title.jpg` 82.945 B — title screen over the living city.
+- `3-onfoot.jpg` 102.172 B — Dario on foot in the plaza, fountain +
+  peds, "Go to Rosa's café 62 m", Rosa's line.
+- `4-mission.jpg` 77.462 B — M1 at the docks, beacon column, "Drive
+  to the docks 12 m · 2:29", Rosa's line.
+- Chase (not a dossier file, verified in /tmp): yellow Vespera GT at
+  86 km/h, 3 stars, 3 cruisers ahead with light bars, "WANTED ★★★☆☆".
+
+**QA (18 Nov, all green):**
+- selftest **109/109 PASS, 0 failed, 0 skipped** (was 59/87 on the v1
+  test against the v2 game).
+- `tests/shots.py` **PASS, 0 errors** (2-title / 3-onfoot / 4-mission).
+- `tests/playtest.py` **PASS, 0 errors** (title → play, walk 3.3 m,
+  enter car, drive 13.0 m, exit 1.7 m, wanted 2 + 1 police car,
+  M1 "Drive to the docks", HUD + minimap, fps 6 headless).
+- `main.ts` determinism: two runs to fresh dirs → `diff -r` identical;
+  dossier 711.229 bytes, schema `makefun/dossier/v1`, game/ 22 files
+  2,34 MB, output 3,4 MB — all inside the gate caps.
+- `serve.ts` contract checked in selftest: GET 200, HEAD 200 with no
+  body, POST 405, missing file 404.
+
+**Ready to resubmit:** the entry is complete and verified; the actual
+`makefun submit` still needs the parent agent (browser + login).

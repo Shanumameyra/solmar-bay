@@ -146,10 +146,13 @@ export function createEffects(scene, THREE) {
   };
 
   api.update = function update(dt) {
-    if (!enabled) return;
+    // Trauma / FOV decay is pure math, not scene work: it runs even when
+    // the particle cloud is inert (headless tests), so trauma added in a
+    // test actually fades instead of sticking at its peak forever.
     api.trauma = Math.max(0, api.trauma - api.decay * dt);
     api.fovKick *= Math.exp(-4 * dt);
     if (Math.abs(api.fovKick) < 0.01) api.fovKick = 0;
+    if (!enabled) return;
     let any = false;
     for (let i = 0; i < MAX_PARTICLES; i++) {
       if (api._life[i] <= 0) continue;
@@ -176,13 +179,17 @@ export function createEffects(scene, THREE) {
   // before this runs, so the shake never accumulates. FOV kick widens the
   // lens briefly at speed / on impacts.
   api.applyCamera = function applyCamera(camera, dt) {
-    if (!enabled || !camera) return;
+    // The offset is pure math too: compute + return it even when the
+    // particle cloud is inert, so a headless caller still gets the offset
+    // it applied (and can assert on it). Without a camera there is
+    // nothing to move, but the offset is still the honest answer.
     api._t += (dt ?? 0.016) * 30;
     const shake = api.trauma * api.trauma * api.strength;
     const ox = api.maxOffset.x * shake * Math.sin(api._t * 1.7);
     const oy = api.maxOffset.y * shake * Math.sin(api._t * 2.3);
     const roll = api.maxRoll * shake * Math.sin(api._t * 1.1);
     api._lastOffset = { x: ox, y: oy, roll };
+    if (!camera) return { ...api._lastOffset };
     if (shake > 0.0001) {
       camera.position.x += ox;
       camera.position.y += oy;
@@ -194,6 +201,7 @@ export function createEffects(scene, THREE) {
       camera.fov = wantFov;
       if (camera.updateProjectionMatrix) camera.updateProjectionMatrix();
     }
+    return { ...api._lastOffset };
   };
 
   api.getCameraOffset = function getCameraOffset() {

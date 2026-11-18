@@ -1,13 +1,15 @@
 // Registers the three-hooks resolver for this process.
 // Loaded via: node --import ./tests/register-three.mjs <script>
+// (the --import flag makes node run this file before the test script, so
+// the bare 'three' import inside the game resolves to the vendored
+// build before any game module is loaded).
 import { register } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// Idempotent: importing this twice (e.g. via --import and a direct import)
-// must not register the hooks twice.
+// Guard against a double registration (e.g. --import plus a direct
+// import of this file): registering the same hooks twice is an error.
 if (!globalThis.__solmarBayThreeRegistered) {
   globalThis.__solmarBayThreeRegistered = true;
   register(pathToFileURL(join(here, 'three-hooks.mjs')).href);

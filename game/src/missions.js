@@ -185,6 +185,16 @@ export function createMissions() {
       api.phase = 'idle';
       api._nextPending = api.index < 3 ? api.index + 1 : null;
       api.timer = 0;
+      // Advance the pointer to the pending mission now (not only when the
+      // player walks back to the café): state.mission.index is what the
+      // save records, and leaving it on the finished mission would make a
+      // save/load replay the job that was just completed instead of the
+      // next one. After the last mission there is no next, so the index
+      // stays (free roam).
+      if (api._nextPending != null) {
+        api.index = api._nextPending;
+        api.stepIndex = 0;
+      }
       const cafe = landmark(state, 'cafe');
       state.mission = state.mission || {};
       state.mission.marker =

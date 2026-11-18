@@ -2,13 +2,14 @@
 // Run: node --import ./tests/register-three.mjs tests/selftest.mjs
 // (the --import maps the bare 'three' specifier to the vendored build).
 // Tests: RNG determinism, A* paths, mission data, world stepping (walk,
-// enter a car), police (heat/spawn/bust/cooldown), missions (M1 flow,
-// timer fail, replay), combat (punch/shoot/medkit/gun shop/death), save
+// enter a car, drive), police (heat/spawn/bust/cooldown), missions (M1
+// flow, timer fail), combat (punch/shoot/medkit/gun shop/death), save
 // round-trip, audio/effects/hud/minimap headless, staged shots +
-// determinism, dossier caps, and (when screenshots exist) the main.ts build.
+// determinism, dossier caps, main.ts build + determinism, serve.ts,
+// and (when screenshots exist) the shots on disk.
 // Exits non-zero on any failure; prints PASS/SKIP per check.
-import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,7 +52,13 @@ function makeSystems() {
   return { police: createPolice(), missions: createMissions(), combat: createCombat() };
 }
 
+// Step the world as the browser does after Enter: the world starts on
+// the title screen, and missions only progress once the game is playing.
+// A world left on 'title' never starts M0, so every stepped test plays
+// first. Busted/wasted screens are left alone (the respawn flow owns
+// them, and forcing 'play' there would hide a stuck respawn).
 function stepN(world, input, systems, n) {
+  if (world.state.screen === 'title') world.state.screen = 'play';
   for (let i = 0; i < n; i++) {
     world.step(1 / 60, input, systems);
     input.endFrame();
@@ -152,8 +159,13 @@ console.log('== A* paths ==');
   }
   const p2 = nav.findPath(8, 30, 0, -36);
   check('A* spawn->café finds a path', Array.isArray(p2) && p2.length > 1);
-  const p3 = nav.findPath(0, 0, 144, 48);
-  check('A* from a blocked cell (fountain) returns null', p3 === null);
+  // The plaza fountain sits at (0, 12) — its basin collider is
+  // {minX:-4, maxX:4, minZ:8, maxZ:16} — so a path STARTING in the
+  // fountain is unreachable, while the (0, 0) street intersection just
+  // south of it is open ground and routes fine.
+  check('A* from a blocked cell (fountain, 0,12) returns null', nav.findPath(0, 12, 144, 48) === null);
+  check('A* from the open (0,0) intersection finds a path', Array.isArray(nav.findPath(0, 0, 144, 48)));
+  check('Fountain point itself is blocked', nav.pointBlocked(0, 12) === true && nav.pointBlocked(0, 0) === false);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +244,7 @@ console.log('== Police: heat, spawn, bust, cooldown ==');
   // Bust: put a cop next to the player on foot, wait.
   const p = world.state.player;
   if (p.car) world.teleport(p.x, p.z, Math.PI, null);
-  systems.police.spawnCop(world.state, p);
+  systems.police.spawnCop(world.state, p.x, p.z);
   const cop = world.state.peds.find((x) => x.isCop);
   if (cop) {
     cop.x = p.x + 1;
@@ -268,26 +280,35 @@ console.log('== Missions: M1 flow, timer fail ==');
   const input = createInput(null);
   world.state.systems = systems;
   const m = systems.missions;
-  // Walk into the café to start M1.
+  // Walk into the café to start M1 (M0 completes there, then M1 starts).
   world.teleport(LANDMARKS.cafe.x, LANDMARKS.cafe.z, Math.PI, null);
   stepN(world, input, systems, 5);
   check('Café starts M1', m.index === 1 && m.phase === 'active', `index=${m.index} phase=${m.phase}`);
   check('M1 objective is the docks step', (world.state.mission.objective || '').length > 0, world.state.mission.objective);
   check('M1 marker is the docks', !!world.state.mission.marker && Math.hypot(world.state.mission.marker.x - LANDMARKS.docks.x, world.state.mission.marker.z - LANDMARKS.docks.z) < 2);
-  // Go to the docks -> advance to step 1 (deliver to café).
+  // Arrive at the docks (5 m out: inside the 8 m arrival radius, outside
+  // the 3 m collect radius) -> advance to step 1 (collect).
+  world.teleport(LANDMARKS.docks.x + 5, LANDMARKS.docks.z, 0, null);
+  stepN(world, input, systems, 5);
+  check('Docks arrival advances M1 to step 1', m.stepIndex === 1, 'stepIndex=' + m.stepIndex);
+  // Walk onto the package itself -> step 2 (deliver to the café).
   world.teleport(LANDMARKS.docks.x, LANDMARKS.docks.z, 0, null);
   stepN(world, input, systems, 5);
-  check('Docks advances M1 to step 1', m.stepIndex === 1, 'stepIndex=' + m.stepIndex);
+  check('Collecting the package advances M1 to step 2', m.stepIndex === 2, 'stepIndex=' + m.stepIndex);
   // Deliver to the café -> complete, +$300. Step one at a time and stop
   // the moment it completes: the very next step at the café would
   // auto-start M2 (idle branch, within 8 m of the café).
+  // Count the DELTA: completing M0 at the café already raised
+  // missionsDone to 1 (the intro counts as a mission done), so the loop
+  // must wait for one MORE, not for the counter to reach 1.
   const moneyBefore = world.state.money;
+  const doneBefore = world.state.stats.missionsDone;
   world.teleport(LANDMARKS.cafe.x, LANDMARKS.cafe.z, Math.PI, null);
-  for (let i = 0; i < 10 && world.state.stats.missionsDone === 0; i++) {
+  for (let i = 0; i < 10 && world.state.stats.missionsDone === doneBefore; i++) {
     world.step(1 / 60, input, systems);
     input.endFrame();
   }
-  check('M1 completes at the café', world.state.stats.missionsDone === 1, 'done=' + world.state.stats.missionsDone);
+  check('M1 completes at the café', world.state.stats.missionsDone === doneBefore + 1, 'done=' + world.state.stats.missionsDone);
   check('M1 pays $300', world.state.money === moneyBefore + 300, `money ${moneyBefore} -> ${world.state.money}`);
   // Move away from the café (to the plaza) BEFORE the next step, so the
   // pending mission does not auto-start; then confirm it is pending.
@@ -321,10 +342,19 @@ console.log('== Combat: punch, shoot, medkit, gun shop, death ==');
   world.step(1 / 60, input, systems);
   input.endFrame();
   check('Punch damages the ped in front', ped.hp < hpBefore, `hp ${hpBefore} -> ${ped.hp}`);
-  // Shoot: give the pistol + ammo, put a cop in front, click.
+  // Shoot: give the pistol + ammo, put a cop in front, click. Every other
+  // ped is parked far away first: the punched ped is still standing ~4 m
+  // ahead inside the pistol cone, and the shot hits the NEAREST target —
+  // without the clear-out it, not the cop, takes the round.
+  // Raise the heat to 3 stars first: at wanted 0 the police trim step
+  // removes every on-foot cop as excess (tier 0 wants 0), so a ped
+  // flagged isCop would be gone from state.peds before combat.step runs.
+  // At 3 stars the tier wants 2 foot cops, and the target survives.
+  systems.police.addHeat(3, 'test', world.state);
   combat.weapon = 'pistol';
   combat.ammo = 12;
   combat.reserveAmmo = 12;
+  for (const pd of world.state.peds) { pd.x = 150; pd.z = 150; }
   const cop = world.state.peds.find((x) => !x.isCop) || world.state.peds[0];
   cop.isCop = true;
   cop.hp = 100;
@@ -368,7 +398,7 @@ console.log('== Save round-trip ==');
   world.state.money = 777;
   world.state.stats.missionsDone = 2;
   const res = saveGame(world.state, store);
-  check('saveGame writes', res.ok === true);
+  check('saveGame writes', res === true);
   check('hasSave is true', hasSave(store) === true);
   const loaded = loadSave(store);
   check('loadSave reads', loaded.ok === true && loaded.data.money === 777 && loaded.data.missionIndex === 0);
@@ -452,15 +482,30 @@ console.log('== Staged shots + determinism ==');
     const info = stageShot(name, world, systems);
     check(`stageShot(${name}) ok`, info.ok === true && (info.screen === 'play' || info.screen === 'title'), JSON.stringify(info));
   }
-  // Determinism: same seed -> same staged state (all shots).
+  // Aliases: 'hero' stages the cover drive, 'title' the title screen.
+  {
+    const world = createWorld(7);
+    const systems = makeSystems();
+    world.state.systems = systems;
+    const hero = stageShot('hero', world, systems);
+    check("stageShot('hero') aliases the cover", hero.ok === true && hero.screen === 'play' && hero.inCar === true, JSON.stringify(hero));
+  }
+  {
+    const world = createWorld(7);
+    const systems = makeSystems();
+    world.state.systems = systems;
+    const title = stageShot('title', world, systems);
+    check("stageShot('title') stages the title screen", title.ok === true && title.screen === 'title', JSON.stringify(title));
+  }
+  // Determinism: same seed -> same staged state (all shots + aliases).
   function stageOnce(name) {
     const world = createWorld(7);
     const systems = makeSystems();
     world.state.systems = systems;
     const info = stageShot(name, world, systems);
-    return { wanted: info.wanted, money: info.money, police: info.policeCars, peds: info.peds, inCar: info.inCar };
+    return { wanted: info.wanted, money: info.money, police: info.policeCars, peds: info.peds, inCar: info.inCar, speed: info.speed };
   }
-  for (const name of SHOT_NAMES) {
+  for (const name of [...SHOT_NAMES, 'hero', 'title']) {
     const a = stageOnce(name);
     const b = stageOnce(name);
     check(`stageShot(${name}) is deterministic`, JSON.stringify(a) === JSON.stringify(b), JSON.stringify(a) + ' vs ' + JSON.stringify(b));
@@ -468,7 +513,7 @@ console.log('== Staged shots + determinism ==');
 }
 
 // ---------------------------------------------------------------------------
-console.log('== Finisher polish (18 Nov) ==');
+console.log('== Finisher polish (v2) ==');
 {
   // Parked cars sit on a street centreline and face along it, so stealing
   // one and driving straight never stalls against a wall.
@@ -581,24 +626,51 @@ console.log('== Finisher polish (18 Nov) ==');
       loaded.ok ? `money=${loaded.data.money} fromBak=${loaded.fromBak}` : 'no fallback');
   }
 
-  // Hero staging: the silver GT drives north up the beach boulevard at 3
-  // stars, shot from the front, drifted, sandwiched by two cruisers + one
-  // chasing behind, and the hero HUD (MISSION 7/7 THE TIDE JOB, $18,450,
-  // 151 KM/H, Lucía Ortega card).
+  // Cover staging: the sedan drives south down the beach boulevard at
+  // speed, sea on the right, peds in the background.
   {
     const w7 = createWorld(7);
     const sys7 = makeSystems();
     w7.state.systems = sys7;
-    const info = stageShot('hero', w7, sys7);
+    const info = stageShot('cover', w7, sys7);
     const car = w7.state.player.car;
-    check('Hero car drives on the beach (x < -168)', !!car && car.x < -168, car ? `x=${car.x.toFixed(0)}` : 'no car');
+    check('Cover car drives on the beach (x < -168)', !!car && car.x < -168, car ? `x=${car.x.toFixed(0)}` : 'no car');
+    check('Cover car is at speed (> 60 km/h)', info.speed > 60, info.speed + ' km/h');
     const bgPeds = (w7.state.peds || []).filter((p) => car && Math.hypot(p.x - car.x, p.z - car.z) < 100).length;
-    check('Hero has a few background pedestrians', bgPeds >= 3, bgPeds + ' peds within 100 m');
-    check('Hero runs at 3 stars', info.wanted === 3, 'wanted=' + info.wanted);
-    check('Hero has 3 cruisers, no tank', info.policeCars === 3, info.policeCars + ' police cars');
-    check('Hero HUD override is staged', !!w7.state.heroHud && w7.state.heroHud.carName === 'VESPERA GT',
-      w7.state.heroHud ? w7.state.heroHud.carName : 'no heroHud');
-    check('Hero camera is staged', w7.state.heroCam === true);
+    check('Cover has a few background pedestrians', bgPeds >= 3, bgPeds + ' peds within 100 m');
+  }
+
+  // Chase staging: 3 stars, 3 cruisers ahead, at speed and undamaged —
+  // the cruisers must be closing in, not ramming the player head-on.
+  {
+    const w8 = createWorld(7);
+    const sys8 = makeSystems();
+    w8.state.systems = sys8;
+    const info = stageShot('chase', w8, sys8);
+    const car = w8.state.player.car;
+    check('Chase runs at 3 stars', info.wanted === 3, 'wanted=' + info.wanted);
+    check('Chase has 3 police cars', info.policeCars === 3, info.policeCars + ' police cars');
+    check('Chase is at speed (>= 60 km/h)', info.speed >= 60, info.speed + ' km/h');
+    check('Chase car is undamaged (no head-on ram)', !!car && car.hp === 100, car ? 'hp=' + car.hp : 'no car');
+  }
+
+  // On-foot staging: Dario on foot in the plaza, not in a car.
+  {
+    const w9 = createWorld(7);
+    const sys9 = makeSystems();
+    w9.state.systems = sys9;
+    const info = stageShot('onfoot', w9, sys9);
+    check('Onfoot staging is on foot', info.inCar === false && info.screen === 'play', JSON.stringify(info));
+  }
+
+  // Mission staging: M1 at the docks, Rosa's objective on the HUD.
+  {
+    const w10 = createWorld(7);
+    const sys10 = makeSystems();
+    w10.state.systems = sys10;
+    const info = stageShot('mission', w10, sys10);
+    check('Mission staging runs M1 at the docks', info.mission === 1 && (info.objective || '').toLowerCase().includes('docks'),
+      `mission=${info.mission} objective=${info.objective}`);
   }
 }
 
@@ -621,10 +693,9 @@ console.log('== Dossier caps (game/ + screenshots/) ==');
   check('game/ bytes <= 48 MiB', bytes <= 50331648, (bytes / 1048576).toFixed(2) + ' MiB');
   const shotsDir = join(ROOT, 'screenshots');
   // 4 staged shots (hero + title + onfoot + mission) — the kit gate
-  // allows 3-4 screenshots. collage.jpg is a derived 2x2 composite, not
-  // a staged shot, so it is excluded from the count and the size cap.
+  // allows 3-4 screenshots.
   const shots = existsSync(shotsDir)
-    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f) && !f.startsWith('collage')) : [];
+    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f)) : [];
   check('3-4 screenshots present', shots.length >= 3 && shots.length <= 4, shots.length + ' found: ' + shots.join(', '));
   let shotsOk = shots.length >= 3 && shots.length <= 4;
   for (const f of shots) {
@@ -632,6 +703,16 @@ console.log('== Dossier caps (game/ + screenshots/) ==');
     if (sz > 262144) { shotsOk = false; console.log(`  ${f} is ${sz} bytes (> 256 KiB)`); }
   }
   if (shots.length >= 3) check('Each screenshot <= 256 KiB', shotsOk);
+  // shots.json names the same 4 files, in dossier order.
+  try {
+    const manifest = JSON.parse(readFileSync(join(ROOT, 'shots.json'), 'utf8'));
+    const names = manifest.map((m) => m.name);
+    check('shots.json lists the screenshots on disk',
+      names.length === shots.length && names.every((n, i) => n === shots.slice().sort()[i]),
+      'manifest: ' + names.join(', ') + ' / disk: ' + shots.slice().sort().join(', '));
+  } catch (e) {
+    check('shots.json lists the screenshots on disk', false, String(e.message).slice(0, 120));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -639,26 +720,91 @@ console.log('== main.ts build ==');
 {
   const shotsDir = join(ROOT, 'screenshots');
   const shots = existsSync(shotsDir)
-    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f) && !f.startsWith('collage')) : [];
+    ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f)) : [];
   if (shots.length === 0) {
     skip('main.ts run (no screenshots yet)', 'run tests/shots.py first');
   } else {
-    const outDir = join(ROOT, 'out-test');
+    const outA = join(ROOT, 'out-test-a');
+    const outB = join(ROOT, 'out-test-b');
     try {
-      execFileSync('node', ['main.ts'], {
-        cwd: ROOT,
-        env: { ...process.env, MAKEFUN_OUTPUT_DIR: outDir },
-        stdio: 'pipe',
-      });
-      const hasGame = existsSync(join(outDir, 'game', 'index.html'));
-      const hasShots = existsSync(join(outDir, 'screenshots', shots[0]));
-      const hasDossier = existsSync(join(outDir, 'dossier.json'));
-      check('main.ts writes out/game/', hasGame);
-      check('main.ts writes out/screenshots/', hasShots);
-      check('main.ts writes out/dossier.json', hasDossier);
+      // Two runs into two fresh directories: the build must be
+      // deterministic (byte-identical), or the gate's dossier check fails.
+      for (const outDir of [outA, outB]) {
+        rmSync(outDir, { recursive: true, force: true });
+        execFileSync(process.execPath, ['main.ts'], {
+          cwd: ROOT,
+          env: { ...process.env, MAKEFUN_OUTPUT_DIR: outDir },
+          stdio: 'pipe',
+        });
+      }
+      check('main.ts writes out/game/', existsSync(join(outA, 'game', 'index.html')));
+      check('main.ts writes out/screenshots/', existsSync(join(outA, 'screenshots', shots[0])));
+      check('main.ts writes out/dossier.json', existsSync(join(outA, 'dossier.json')));
+      const dA = readFileSync(join(outA, 'dossier.json'));
+      const dB = readFileSync(join(outB, 'dossier.json'));
+      check('main.ts is deterministic (two runs byte-identical)', dA.equals(dB), `${dA.length} vs ${dB.length} bytes`);
+      let schemaOk = false;
+      try {
+        schemaOk = JSON.parse(dA.toString('utf8')).schema === 'makefun/dossier/v1';
+      } catch { schemaOk = false; }
+      check('dossier.json has the makefun/dossier/v1 schema', schemaOk);
     } catch (e) {
       check('main.ts runs', false, String(e.message).slice(0, 200));
+    } finally {
+      rmSync(outA, { recursive: true, force: true });
+      rmSync(outB, { recursive: true, force: true });
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('== serve.ts ==');
+{
+  // Serve game/ on an uncommon port and check the reads-only contract:
+  // GET serves, HEAD answers with headers and no body, POST is refused,
+  // a missing file is a 404.
+  const port = 18123;
+  const base = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ['serve.ts', '--port', String(port)], {
+    cwd: ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stop = () => { try { child.kill(); } catch { /* already gone */ } };
+  const waitUp = async () => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch(`${base}/index.html`, { signal: AbortSignal.timeout(1000) });
+        if (r.status === 200) return true;
+      } catch { /* not up yet */ }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
+  };
+  try {
+    const up = await waitUp();
+    check('serve.ts serves game/index.html (GET 200)', up);
+    if (up) {
+      const get = await fetch(`${base}/index.html`, { signal: AbortSignal.timeout(5000) });
+      const html = await get.text();
+      check('GET /index.html is the game page', html.includes('game-canvas'));
+      const head = await fetch(`${base}/index.html`, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+      const headBody = await head.text();
+      check('HEAD answers 200 with no body', head.status === 200 && headBody === '');
+      const post = await fetch(`${base}/index.html`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+      check('POST is refused (405)', post.status === 405);
+      const missing = await fetch(`${base}/no-such-file.js`, { signal: AbortSignal.timeout(5000) });
+      check('Missing file is a 404', missing.status === 404);
+    } else {
+      check('GET /index.html is the game page', false, 'server did not come up');
+      check('HEAD answers 200 with no body', false, 'server did not come up');
+      check('POST is refused (405)', false, 'server did not come up');
+      check('Missing file is a 404', false, 'server did not come up');
+    }
+  } catch (e) {
+    check('serve.ts answers', false, String(e.message).slice(0, 200));
+  } finally {
+    stop();
   }
 }
 
