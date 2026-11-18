@@ -44,6 +44,7 @@
   #weapon-slots { margin-top: 8px; display: flex; gap: 6px; justify-content: flex-end; }
   .wslot { background: rgba(12,8,20,.62); border: 1px solid rgba(255,255,255,.22); border-radius: 6px; padding: 4px 9px; font-size: 13px; font-weight: 700; }
   .wslot.active { border-color: #ffd23d; color: #ffd23d; }
+  .wslot.hot { border-color: #ff7a1a; color: #ff7a1a; background: rgba(255,122,26,.18); }
   .wslot .ammo { opacity: .8; font-weight: 600; }
   #hud-bottom-left { position: absolute; left: 16px; bottom: 16px; width: 200px; }
   #minimap { width: 160px; height: 160px; border: 2px solid rgba(255,255,255,.4); border-radius: 50%; background: #0e1420; display: block; }
@@ -55,11 +56,13 @@
   .bar > div { height: 100%; transition: width .15s; }
   #health-fill { background: #39ff88; }
   #rep-fill { background: #ffd23d; }
+  #armour-fill { background: #4da3ff; }
   .bar-num { width: 34px; text-align: right; }
   .rep-num { width: 86px; }
   #hud-bottom-right { position: absolute; right: 16px; bottom: 16px; text-align: right; }
   #speed { font-size: 64px; font-weight: 800; line-height: .9; }
   #speed-unit { font-size: 15px; font-weight: 700; opacity: .85; }
+  #gear { font-size: 13px; font-weight: 800; letter-spacing: 1px; color: #ff9a7a; margin-left: 6px; }
   #car-name { font-size: 17px; font-weight: 800; color: #7ab8ff; letter-spacing: 1px; margin-top: 2px; }
   #cond-row { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 5px; font-size: 12px; font-weight: 700; }
   #cond-bar { width: 150px; height: 9px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.35); border-radius: 5px; overflow: hidden; }
@@ -68,6 +71,7 @@
   #dialogue { position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px; max-width: 620px; display: flex; gap: 12px; align-items: center; background: rgba(12,8,20,.72); border: 1px solid rgba(255,255,255,.25); border-radius: 10px; padding: 10px 16px; }
   .dlg-portrait { flex: none; width: 52px; height: 52px; border-radius: 50%; background: linear-gradient(135deg, #ff7a1a, #ff2d78); display: flex; align-items: center; justify-content: center; font-size: 19px; font-weight: 800; color: #fff; border: 2px solid rgba(255,255,255,.5); }
   .dlg-name { font-size: 14px; font-weight: 800; letter-spacing: 1px; color: #ffd23d; }
+  .dlg-role { font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #ff9a7a; margin-top: 1px; }
   #dialogue-text { font-size: 15px; font-style: italic; margin-top: 2px; }
   #hint { position: absolute; left: 50%; transform: translateX(-50%); bottom: 150px; font-size: 13px; opacity: .85; background: rgba(0,0,0,.45); padding: 5px 12px; border-radius: 6px; }
   #feed { position: absolute; left: 50%; transform: translateX(-50%); top: 14px; width: 340px; }
@@ -104,7 +108,7 @@
       <div id="mission-next"></div>
     </div>
     <div id="police-panel" class="panel hidden">
-      <h3>MBPD RESPONSE</h3>
+      <h3 id="police-title">MBPD RESPONSE</h3>
       <div id="police-list"></div>
     </div>
   </div>
@@ -118,19 +122,20 @@
   <div id="feed"></div>
   <div id="dialogue" class="hidden">
     <div class="dlg-portrait" id="dlg-portrait">MR</div>
-    <div><div class="dlg-name" id="dlg-name">MAMA ROSA</div><div id="dialogue-text"></div></div>
+    <div><div class="dlg-name" id="dlg-name">MAMA ROSA</div><div class="dlg-role hidden" id="dlg-role"></div><div id="dialogue-text"></div></div>
   </div>
   <div id="hud-bottom-left">
     <canvas id="minimap" width="160" height="160"></canvas>
     <div id="loc-name">CORAL SHORE</div>
     <div id="loc-street">Paloma Boulevard</div>
     <div class="bar-row"><span class="bar-label">HEALTH</span><div class="bar"><div id="health-fill"></div></div><span class="bar-num" id="health-num">100</span></div>
-    <div class="bar-row"><span class="bar-label">REP</span><div class="bar"><div id="rep-fill"></div></div><span class="bar-num rep-num" id="rep-num">STREET RAT</span></div>
+    <div class="bar-row"><span class="bar-label" id="rep-label">REP</span><div class="bar"><div id="rep-fill"></div></div><span class="bar-num rep-num" id="rep-num">STREET RAT</span></div>
+    <div class="bar-row hidden" id="armour-row"><span class="bar-label">ARMOUR</span><div class="bar"><div id="armour-fill"></div></div><span class="bar-num" id="armour-num">100</span></div>
   </div>
   <div id="hud-bottom-right">
-    <div><span id="speed">0</span> <span id="speed-unit">KM/H</span></div>
+    <div><span id="speed">0</span> <span id="speed-unit">KM/H</span> <span id="gear" class="hidden"></span></div>
     <div id="car-name">ON FOOT</div>
-    <div id="cond-row"><span>CONDITION</span><div id="cond-bar"><div id="cond-fill"></div></div></div>
+    <div id="cond-row"><span>CONDITION</span><div id="cond-bar"><div id="cond-fill"></div></div><span class="bar-num" id="cond-num">100%</span></div>
     <div id="radio-name">♪ Wave 104 · Sunset Synth</div>
   </div>
   <div id="hint" class="hidden">WASD drive / walk · SHIFT sprint / handbrake · E enter car · F punch · Click shoot · R reload · H honk · M mute · Esc pause</div>

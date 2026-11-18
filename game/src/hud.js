@@ -55,8 +55,12 @@ export function createHud(doc) {
     stars: $('stars'),
     healthFill: $('health-fill'),
     healthNum: $('health-num'),
+    repLabel: $('rep-label'),
     repFill: $('rep-fill'),
     repNum: $('rep-num'),
+    armourRow: $('armour-row'),
+    armourFill: $('armour-fill'),
+    armourNum: $('armour-num'),
     objective: $('objective'),
     objectiveDist: $('objective-dist'),
     missionTimer: $('mission-timer'),
@@ -65,6 +69,7 @@ export function createHud(doc) {
     stageFill: $('stage-fill'),
     missionNext: $('mission-next'),
     policePanel: $('police-panel'),
+    policeTitle: $('police-title'),
     policeList: $('police-list'),
     insightBadge: $('insight-badge'),
     weaponSlots: $('weapon-slots'),
@@ -75,9 +80,13 @@ export function createHud(doc) {
     carName: $('car-name'),
     condRow: $('cond-row'),
     condFill: $('cond-fill'),
+    condNum: $('cond-num'),
+    gear: $('gear'),
+    radioName: $('radio-name'),
     dialogue: $('dialogue'),
     dialogueText: $('dialogue-text'),
     dlgName: $('dlg-name'),
+    dlgRole: $('dlg-role'),
     dlgPortrait: $('dlg-portrait'),
     feed: $('feed'),
     vignette: $('vignette'),
@@ -171,8 +180,9 @@ export function createHud(doc) {
       const p = state.player;
       const wanted = state.wanted || 0;
       // Hero-shot override (shots.js stages state.heroHud): the #1-entry
-      // HUD values (MISSION 7/7, $18,450, 4+1 stars, 151 KM/H, Lucía card)
-      // are display-only — gameplay state underneath is untouched.
+      // HUD values (CH 5 PAPER MOON, $38,420, 4+1 stars, 151 KM/H, Juno
+      // Reyes card) are display-only — gameplay state underneath is
+      // untouched.
       const hero = state.heroHud || null;
 
       // Cash.
@@ -206,10 +216,12 @@ export function createHud(doc) {
       this.lastHp = hp;
       // Low-HP vignette.
       this.toggle('vignette', hp <= 30 && screen === 'play');
-      // Weapon slots (top-right): FISTS + PISTOL with ammo, active one lit.
+      // Weapon slots (top-right): FISTS + PISTOL with ammo, active one lit
+      // — or the hero shot's WASP SMG (orange highlight).
       const weapon = (p.weapon || 'fists').toUpperCase();
       const isPistol = weapon === 'PISTOL';
-      this.setHtml('weaponSlots',
+      if (hero && hero.weaponsHtml) this.setHtml('weaponSlots', hero.weaponsHtml);
+      else this.setHtml('weaponSlots',
         '<span class="wslot' + (isPistol ? '' : ' active') + '">✊ FISTS</span>'
         + '<span class="wslot' + (isPistol ? ' active' : '') + '">🔫 PISTOL <span class="ammo">'
         + (p.ammo ?? 12) + '/' + (p.reserveAmmo ?? 0) + '</span></span>');
@@ -230,7 +242,7 @@ export function createHud(doc) {
       const dist = marker ? Math.round(Math.hypot(p.x - marker.x, p.z - marker.z)) : null;
       this.set('objectiveDist', dist != null ? ' · ' + dist + ' m' : '');
       const timer = m.timer || 0;
-      this.set('missionTimer', timer > 0 ? ' · ' + fmtTimer(timer) : '');
+      this.set('missionTimer', hero && hero.timer ? ' · ' + hero.timer : (timer > 0 ? ' · ' + fmtTimer(timer) : ''));
       this.set('stageLabel', hero && hero.stageLabel ? hero.stageLabel : (active ? 'STAGE ' + (stepIdx + 1) + '/' + steps.length : 'STAGE —'));
       this.setStyle('stageFill', 'width', hero && hero.stagePct != null
         ? hero.stagePct + '%'
@@ -242,9 +254,15 @@ export function createHud(doc) {
       this.setHtml('missionNext', 'NEXT&nbsp; <b>' + next + '</b>');
       // Police response panel (below the mission panel): the heli at 3+
       // stars, then the pursuing cruisers with distance + status, plus the
-      // tank when it is out.
+      // tank when it is out — or the hero shot's static panel (HKPD
+      // RESPONSE — 7 UNITS CODE 4, with the 5 staged distances).
       this.toggle('policePanel', wanted > 0);
+      if (hero && hero.policeTitle) this.set('policeTitle', hero.policeTitle);
       if (wanted > 0) {
+        if (hero && hero.policeRows) {
+          this.setHtml('policeList', hero.policeRows.map((r) =>
+            '<div class="police-row"><span>' + r.name + '</span><span class="police-dist">' + r.dist + '</span><span class="police-status">' + r.status + '</span></div>').join(''));
+        } else {
         const rows = [];
         if (wanted >= 3) {
           rows.push('<div class="police-row"><span>GULL-1</span><span class="police-dist">—</span><span class="police-status spot">SPOTLIGHT ON YOU</span></div>');
@@ -261,18 +279,34 @@ export function createHud(doc) {
           rows.push('<div class="police-row"><span>ARMOR-1</span><span class="police-dist">' + d + ' m</span><span class="police-status">RAMMING</span></div>');
         }
         this.setHtml('policeList', rows.join(''));
+        }
       }
       // IN SIGHT badge (top-right): the police can see the player.
       this.set('insightBadge', hero && hero.insight ? hero.insight : 'IN SIGHT');
       this.toggle('insightBadge', !!((state.policeNear && wanted > 0) || (hero && hero.insight)));
-      // Location (bottom-left): district + street.
-      this.set('locName', districtNameAt(p.x, p.z));
+      // Location (bottom-left): district + street — or the hero shot's
+      // CORAL STRAND.
+      this.set('locName', hero && hero.locName ? hero.locName : districtNameAt(p.x, p.z));
       this.set('locStreet', streetNameAt(p.x, p.z));
-      // REP (bottom-left): missions done / 3.
-      const done = (state.stats && state.stats.missionsDone) || 0;
-      this.setStyle('repFill', 'width', Math.round((done / 3) * 100) + '%');
-      this.set('repNum', REP_LEVELS[Math.min(3, done)]);
-      // Speed (km/h) + car name + condition (bottom-right).
+      // REP (bottom-left): missions done / 3 — or the hero shot's RESPECT 4.
+      if (hero && hero.rep) {
+        this.set('repLabel', hero.rep.label);
+        this.set('repNum', hero.rep.num);
+        this.setStyle('repFill', 'width', hero.rep.pct + '%');
+      } else {
+        const done = (state.stats && state.stats.missionsDone) || 0;
+        this.setStyle('repFill', 'width', Math.round((done / 3) * 100) + '%');
+        this.set('repNum', REP_LEVELS[Math.min(3, done)]);
+      }
+      // Armour bar (bottom-left, blue): the #1 entry shows health + armor;
+      // in normal gameplay there is no armor, so the row stays hidden.
+      this.toggle('armourRow', !!(hero && hero.armour != null));
+      if (hero && hero.armour != null) {
+        this.setStyle('armourFill', 'width', hero.armour + '%');
+        this.set('armourNum', String(hero.armour));
+      }
+      // Speed (km/h) + car name + condition (bottom-right): the #1 entry
+      // shows VESPERA GT CONDITION 100% / 151 KM/H / GEAR 04.
       const kmh = (hero && hero.speedKmh) || Math.round(Math.abs(p.speed || 0) * 3.6);
       this.set('speed', String(kmh));
       this.set('carName', hero && hero.carName ? hero.carName : (p.car ? (p.car.name || 'CAR').toUpperCase() : 'ON FOOT'));
@@ -282,15 +316,21 @@ export function createHud(doc) {
         const cmax = p.car.maxHp || 100;
         this.setStyle('condFill', 'width', Math.round((chp / cmax) * 100) + '%');
         this.setStyle('condFill', 'background', chp <= 35 ? '#ff4444' : chp <= 60 ? '#ffb020' : '#39ff88');
+        this.set('condNum', hero && hero.condPct ? hero.condPct : Math.round((chp / cmax) * 100) + '%');
       }
+      this.set('gear', hero && hero.gear ? 'GEAR ' + hero.gear : '');
+      this.toggle('gear', !!(hero && hero.gear));
+      if (hero && hero.radio) this.set('radioName', hero.radio);
       // The clock ticks with game time (17:40 + elapsed), instead of a
-      // hardcoded '17:40' that never moved.
-      this.set('clock', fmtClock(state.time || 0));
+      // hardcoded '17:40' that never moved — or the hero shot's DAY 1 18:52.
+      this.set('clock', hero && hero.clock ? hero.clock : fmtClock(state.time || 0));
       // Dialogue card (bottom-centre): Mama Rosa's line, without the
       // "Rosa: " prefix (the card already names her) — or the hero shot's
-      // Lucía card (pink portrait, staged contact).
+      // Juno Reyes card (pink portrait, staged contact).
       if (hero && hero.dialogue) {
         this.set('dlgName', hero.dialogue.name);
+        this.set('dlgRole', hero.dialogue.role || '');
+        this.toggle('dlgRole', !!hero.dialogue.role);
         this.set('dlgPortrait', hero.dialogue.initials);
         this.setStyle('dlgPortrait', 'background', 'linear-gradient(135deg,#ff5aa8,#ff2d78)');
         this.set('dialogueText', hero.dialogue.text);
@@ -298,6 +338,7 @@ export function createHud(doc) {
       } else {
         const dlg = (m.dialogue || '').replace(/^Rosa:\s*/, '');
         this.set('dialogueText', dlg);
+        this.toggle('dlgRole', false);
         this.toggle('dialogue', !!(m.dialogue && screen === 'play'));
       }
       // First-run controls hint: show for the first 8 s of play.

@@ -579,9 +579,10 @@ console.log('== Finisher polish (18 Nov) ==');
       loaded.ok ? `money=${loaded.data.money} fromBak=${loaded.fromBak}` : 'no fallback');
   }
 
-  // Hero staging: the red GT drives the beach boulevard at 3 stars, with
-  // five cruisers + the tank on its tail, pedestrians in frame, and the
-  // hero HUD (MISSION 7/7 THE TIDE JOB, $18,450, 151 KM/H, Lucía card).
+  // Hero staging: the pink GT drives south down the beach boulevard at 3
+  // stars, with five cruisers + the tank on its tail, a traffic jam ahead,
+  // pedestrians in frame, and the hero HUD (CH 5 PAPER MOON, $38,420,
+  // 151 KM/H, Juno Reyes card).
   {
     const w7 = createWorld(7);
     const sys7 = makeSystems();

@@ -17,17 +17,17 @@ import { nsGreen } from './traffic.js';
 
 const PAL = CONFIG.PALETTE;
 
-// Saturated sunset gradient: deep violet overhead, magenta mid-sky, vivid
-// orange at the horizon. The orange sits at ~50% (the horizon on screen /
-// the sphere's equator), not at the bottom, so the sky reads orange at eye
-// level instead of pink.
+// Soft peach/pink sunset gradient: violet overhead, magenta mid-sky,
+// peach-orange at the horizon — the #1 entry's warm haze, not a hard
+// orange band. The warm band sits at ~50-68% (the horizon on screen /
+// the sphere's equator), so the sky reads peach at eye level.
 function sunsetStops(grad) {
-  grad.addColorStop(0, '#3a1e5e');
-  grad.addColorStop(0.22, '#6e2a6e');
-  grad.addColorStop(0.38, '#c94a6e');
-  grad.addColorStop(0.5, '#ff6a2a');
-  grad.addColorStop(0.68, '#ff9a3c');
-  grad.addColorStop(1, '#ffc46b');
+  grad.addColorStop(0, '#4a2560');
+  grad.addColorStop(0.22, '#7a2f6e');
+  grad.addColorStop(0.38, '#c95a7e');
+  grad.addColorStop(0.5, '#ff8a5c');
+  grad.addColorStop(0.68, '#ffa87a');
+  grad.addColorStop(1, '#ffd9a8');
 }
 
 function makeSkyTexture() {
@@ -85,35 +85,38 @@ function makeCloudTexture() {
   return tex;
 }
 
-// The visible sun disc: a soft additive glow along the light direction
-// (low in the north-west, over the sea), so the sky reads as a real sunset.
+// The visible sun: a pale white-yellow glare at the END of the road
+// (dead centre, south, very low, almost touching the horizon) — NOT a
+// big round disc. The #1 entry's sun is a bright bloom that whitens the
+// road and sky in the middle of the frame.
 function makeSunSprite() {
   const tex = makeGlowTexture();
   if (!tex) return null;
   const mat = new THREE.SpriteMaterial({
-    map: tex, color: 0xffd9a0, transparent: true,
+    map: tex, color: 0xfff6d8, transparent: true,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.position.set(-560, 120, -380);
-  sprite.scale.set(240, 240, 1);
+  sprite.position.set(-190, 30, 700);
+  sprite.scale.set(110, 110, 1);
   sprite.name = 'sun-disc';
   return sprite;
 }
 
-// Sun glare at the end of the road: a wide, low, warm halo straight north
-// (the boulevard runs north), so driving up the beach runs into the sunset
-// glow like the #1 entry's shot. Additive, fog-free, sky dressing only.
+// Sun glare at the end of the road: a wide, low, warm halo straight south
+// (the boulevard runs south), so driving down the beach runs into the
+// sunset glow like the #1 entry's shot. Additive, fog-free, sky dressing
+// only — strong enough to whiten the road and sky in the middle.
 function makeGlareSprite() {
   const tex = makeGlowTexture();
   if (!tex) return null;
   const mat = new THREE.SpriteMaterial({
-    map: tex, color: 0xff9a4d, transparent: true, opacity: 0.55,
+    map: tex, color: 0xff9a4d, transparent: true, opacity: 0.7,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.position.set(-190, 60, -700);
-  sprite.scale.set(420, 200, 1);
+  sprite.position.set(-190, 55, 700);
+  sprite.scale.set(520, 240, 1);
   sprite.name = 'sun-glare';
   return sprite;
 }
@@ -164,12 +167,13 @@ function makeEnvironment(renderer) {
     new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide }),
   );
   envScene.add(sky);
-  // Sun: a bright sphere in the light direction (drives the highlights).
+  // Sun: a bright sphere in the light direction (drives the highlights) —
+  // low in the south, at the end of the boulevard, like the visible sun.
   const sun = new THREE.Mesh(
     new THREE.SphereGeometry(9, 12, 8),
-    new THREE.MeshBasicMaterial({ color: 0xffd9a0 }),
+    new THREE.MeshBasicMaterial({ color: 0xfff6d8 }),
   );
-  sun.position.set(-52, 19, -22);
+  sun.position.set(0, 18, 50);
   envScene.add(sun);
   // Warm ground below, so downward-facing reflections are warm, not black.
   const ground = new THREE.Mesh(
@@ -216,20 +220,21 @@ export function createRenderer(canvas) {
     CONFIG.RENDER.CAMERA_NEAR, CONFIG.RENDER.CAMERA_FAR,
   );
 
-  // Sunset sun: low in the north-west, warm; only the sun casts shadows.
-  // North-west (was south-west) so the cover shot — driving north up the
-  // beach — runs toward the sunset, with the sea on the left and the
-  // beachfront buildings on the right, like the reference. The environment
-  // map + hemisphere light keep the shadowed side from going black.
-  // Shadow far raised to cover the whole city from here.
+  // Sunset sun: low in the south, warm; only the sun casts shadows.
+  // South (was north-west) so the hero shot — driving south down the
+  // beach — runs toward the sunset at the end of the road, with the
+  // beachfront buildings on the left and the sea + palms on the right,
+  // like the #1 entry. The environment map + hemisphere light keep the
+  // shadowed side from going black. Shadow far raised to cover the whole
+  // city from here.
   const sun = new THREE.DirectionalLight(PAL.SUN, PAL.SUN_INTENSITY);
-  sun.position.set(-260, 80, -110);
+  sun.position.set(-190, 55, 350);
   sun.castShadow = true;
-  // Warm fill from the south-east (no shadow): lifts the camera-facing
-  // facades + the GT's rear, which the low NW sun leaves in shade, so
-  // the pastel buildings read bright like the reference instead of dark.
-  const fill = new THREE.DirectionalLight(0xffc0a8, 0.7);
-  fill.position.set(150, 120, 250);
+  // Warm fill from the north-west (no shadow): lifts the camera-facing
+  // facades + the GT's rear, which the low southern sun leaves in shade,
+  // so the pastel buildings read bright like the reference instead of dark.
+  const fill = new THREE.DirectionalLight(0xffc0a8, 0.8);
+  fill.position.set(-150, 150, -200);
   scene.add(fill);
   sun.shadow.mapSize.set(CONFIG.RENDER.SHADOW_MAP, CONFIG.RENDER.SHADOW_MAP);
   sun.shadow.camera.left = -230;
@@ -380,11 +385,13 @@ export function createRenderer(canvas) {
     new THREE.MeshStandardMaterial({ color: 0xff2d2d, emissive: 0xff1a1a, emissiveIntensity: 1.6, roughness: 0.3 }));
   gtTail.position.set(0, 0.60, -2.06);
   gtGroup.add(gtTail);
-  // A BIG rear wing (blade on two struts), not a flat lip — the reference
-  // GT wears a large visible spoiler over the fastback tail.
-  const gtLip = new THREE.Mesh(boxGeo, gtPaint);
-  gtLip.scale.set(1.9, 0.07, 0.5);
-  gtLip.position.set(0, 0.98, -1.95);
+  // A BIG BLACK rear wing (blade on two tall struts), wider + higher than
+  // the body-colour wing — the #1 entry's VESPERA GT wears a large black
+  // spoiler over the fastback tail, and the black reads against the pink.
+  const gtWingMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.35, metalness: 0.7 });
+  const gtLip = new THREE.Mesh(boxGeo, gtWingMat);
+  gtLip.scale.set(2.2, 0.08, 0.6);
+  gtLip.position.set(0, 1.05, -1.95);
   gtLip.rotation.x = -0.10;
   const gtGrille = new THREE.Mesh(boxGeo,
     new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.6, metalness: 0.4 }));
@@ -394,8 +401,8 @@ export function createRenderer(canvas) {
   const gtStrutMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.5, metalness: 0.5 });
   for (const side of [-1, 1]) {
     const strut = new THREE.Mesh(boxGeo, gtStrutMat);
-    strut.scale.set(0.09, 0.3, 0.2);
-    strut.position.set(0.65 * side, 0.83, -1.95);
+    strut.scale.set(0.09, 0.45, 0.2);
+    strut.position.set(0.65 * side, 0.85, -1.95);
     gtGroup.add(strut);
   }
   gtGroup.add(gtGrille);
@@ -412,9 +419,9 @@ export function createRenderer(canvas) {
     skirt.position.set(0.92 * side, 0.20, 0);
     gtGroup.add(skirt);
   }
-  // Shoulder character lines (thin darker-red strips along each flank)
+  // Shoulder character lines (thin darker-magenta strips along each flank)
   // + a front splitter — body lines that keep the flanks from reading flat.
-  const gtLineMat = new THREE.MeshStandardMaterial({ color: 0x8f1420, roughness: 0.35, metalness: 0.6 });
+  const gtLineMat = new THREE.MeshStandardMaterial({ color: 0x8f1450, roughness: 0.35, metalness: 0.6 });
   for (const side of [-1, 1]) {
     const gline = new THREE.Mesh(boxGeo, gtLineMat);
     gline.scale.set(0.03, 0.04, 3.1);
@@ -784,18 +791,18 @@ export function createRenderer(canvas) {
     const p = state.player;
     const fx = p.car ? Math.sin(p.car.angle) : Math.sin(p.yaw || 0);
     const fz = p.car ? Math.cos(p.car.angle) : Math.cos(p.yaw || 0);
-    // Hero shot: closer (20 m ahead, 14 m up) so the fuselage + rotor
-    // sit inside the rear-3/4 frame, not clipped at the top edge — and
-    // the body + rotor are scaled 1.4x so the heli reads BIG and
-    // prominent in the sky. (The beam + pool stay unscaled: the beam is
-    // 18 m tall and the pool sits at -17.9, so scaling the group would
-    // push the pool under the road.)
-    const ahead = state.heroCam ? 20 : 30;
-    const alt = state.heroCam ? 14 : 18;
-    const heliScale = state.heroCam ? 1.4 : 1;
-    heliBody.scale.set(2.2 * heliScale, 1.6 * heliScale, 5.5 * heliScale);
-    heliRotor.scale.set(11 * heliScale, 0.12, 0.5 * heliScale);
-    heliRotor.position.y = 1.0 * heliScale;
+    // Hero shot: FAR + SMALL (55 m ahead, 22 m up, scale 1.0) — the #1
+    // entry's heli is a dark silhouette high above the horizon, NOT a
+    // big object. The beam is rescaled so it still reaches the road
+    // (height = alt, pool at ground level), whatever the altitude.
+    const ahead = state.heroCam ? 55 : 30;
+    const alt = state.heroCam ? 22 : 18;
+    heliBody.scale.set(2.2, 1.6, 5.5);
+    heliRotor.scale.set(11, 0.12, 0.5);
+    heliRotor.position.y = 1.0;
+    heliBeam.scale.y = alt / 18;
+    heliBeam.position.y = -alt / 2;
+    heliPool.position.y = -(alt - 0.1);
     heliGroup.position.set(p.x + fx * ahead, alt, p.z + fz * ahead);
     heliGroup.rotation.y = Math.atan2(fx, fz);
     heliRotor.rotation.y = time * 15;
@@ -852,12 +859,13 @@ export function createRenderer(canvas) {
     // points (angle). Pitch tilts the look target up/down.
     fwd.set(Math.sin(tyaw), 0, Math.cos(tyaw));
     if (inCar && state.heroCam) {
-      // Hero shot: rear 3/4 chase cam (the reference angle) — back 11 m,
-      // out 5.5 m to the right, 5 m up, looking at the car, so the rear +
-      // flank + big wing read in one frame with the boulevard ahead.
+      // Hero shot: LOW + CLOSE rear 3/4 chase cam (the #1 entry's angle)
+      // — back 6.5 m, out 3.5 m to the right, 2.6 m up, looking 6 m ahead
+      // of the car — so the GT fills the centre-bottom of the frame, the
+      // asphalt fills the bottom third, and the horizon sits mid-frame.
       const rx = -fwd.z, rz = fwd.x; // right = (-cos, sin)
-      desiredPos.set(tx - fwd.x * 9 + rx * 4.5, 4.4, tz - fwd.z * 9 + rz * 4.5);
-      desiredTarget.set(tx + fwd.x * 5, 1.2, tz + fwd.z * 5);
+      desiredPos.set(tx - fwd.x * 6.5 + rx * 3.5, 2.6, tz - fwd.z * 6.5 + rz * 3.5);
+      desiredTarget.set(tx + fwd.x * 6, 2.0, tz + fwd.z * 6);
     } else if (inCar) {
       desiredPos.set(tx - fwd.x * 9.5, 4.4, tz - fwd.z * 9.5);
       desiredTarget.set(tx + fwd.x * 9, 1.4, tz + fwd.z * 9);

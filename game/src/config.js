@@ -67,7 +67,7 @@ export const CONFIG = {
   // ---- Car models (built from boxes, distinct silhouettes) ----
   CAR_MODELS: {
     sedan:  { len: 4.4, wid: 1.9, hgt: 1.35, color: 0x3a6fd8, top: 38, name: 'Sedan' },
-    sports: { len: 4.2, wid: 1.9, hgt: 1.15, color: 0xe01e37, top: 46, name: 'Vespera GT' },
+    sports: { len: 4.2, wid: 1.9, hgt: 1.15, color: 0xff2d92, top: 46, name: 'Vespera GT' },
     taxi:   { len: 4.4, wid: 1.9, hgt: 1.4,  color: 0xf2b705, top: 38, name: 'Taxi' },
     truck:  { len: 6.2, wid: 2.3, hgt: 2.2,  color: 0x8a7d6b, top: 30, name: 'Truck' },
     van:    { len: 5.0, wid: 2.0, hgt: 1.9,  color: 0x9aa5b1, top: 34, name: 'Van' },
@@ -126,8 +126,8 @@ export const CONFIG = {
       intro: 'Pick up the package at the docks, bring it to Rosa.',
       steps: ['Drive to the docks', 'Collect the package', 'Deliver to the café'] },
     { id: 'M2', name: 'Hot Wheels', reward: 500, time: 0,
-      intro: 'Steal the red sports car at the beachfront. Bring it to the garage.',
-      steps: ['Steal the red sports car', 'Deliver it to the garage'] },
+      intro: 'Steal the pink sports car at the beachfront. Bring it to the garage.',
+      steps: ['Steal the pink sports car', 'Deliver it to the garage'] },
     { id: 'M3', name: 'The Getaway', reward: 800, time: 150,
       intro: 'Three stars, three cruisers. Reach the safehouse in the barrios.',
       steps: ['Reach the safehouse', 'Lose the heat'] },
@@ -165,7 +165,7 @@ export const CONFIG = {
     HOSPITAL: 'hospital',
     PRECINCT: 'precinct',
     GUNSHOP: 'gunshop',
-    BEACH_CAR: 'beachCar', // the red sports car for M2
+    BEACH_CAR: 'beachCar', // the pink sports car for M2
   },
 
   // ---- Render budget ----
@@ -197,6 +197,7 @@ export const CONFIG = {
     SAND: 0xe0a878,
     SEA: 0x2a9ab0,
     BUILDING_LOW: [0xe89a8a, 0xf2c49a, 0xe8a0b8, 0xf5d9a8, 0xd8a0c8, 0xffd23d, 0xff8a3c],
+    BUILDING_BEACH: [0xffb08a, 0xff9a7a, 0xffc49a, 0xf08a6a, 0xffb89a],
     BUILDING_MID: [0xd8a8a0, 0xe8b8a8, 0xc8a0b0, 0xf0c8a0, 0xffc46b],
     BUILDING_TOWER: [0xc88a90, 0xd8a0a8, 0xb87a88],
     GLASS: 0x2a3a4a,

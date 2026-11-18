@@ -530,3 +530,81 @@ in-car bust + in-car death checks that step the world afterwards.
   (1-hero.jpg 166,888 B, wanted=3, policeCars=6). Screenshot diverifikasi
   visual: jalan depan penuh mobil berjejer dua lajur sampai horizon,
   trotoar kanan penuh orang, kiri ada beberapa pejalan di tepi pantai.
+
+### Hero-shot round 3 — ikut contoh #1 PERSIS, tank + macet + orang TETAP (18 Nov, steer Romi 09:58 + koreksi)
+- **Arah dibalik ke SELATAN:** pemain start (-190, -60) mengemudi ke selatan
+  (heading 0), bukan utara. Gedung peach/salmon di KIRI, palem merah +
+  billboard FLAMINGO FM + laut di KANAN, matahari di ujung jalan (tengah
+  frame). Sun disc + glare + directional light + fill + env-map sun semua
+  pindah ke selatan; langit dilunakkan ke peach/pink.
+- **Mobil PINK/MAGENTA TERANG** (0xff2d92, dulu merah 0xe01e37) + spoiler
+  belakang HITAM besar-lebar (2,2 m, di atas strut 0,45 m) + garis bahu
+  magenta gelap. Teks M2 "red" -> "pink". Chase cam DITURUNKAN + DIDEKATKAN
+  (6,5 m belakang, 3,5 m kanan, 2,6 m tinggi, target 6 m di depan): GT
+  memenuhi tengah-bawah frame, aspal sepertiga bawah, horizon tengah frame.
+- **Matahari di ujung jalan:** disc kecil pucat (0xfff6d8, skala 110, y=30)
+  + glare lebar (520x240, opacity 0,7) di z=+700 — silau putih-kuning yang
+  memutihkan jalan + langit tengah, bukan cakram bulat besar.
+- **Helikopter KECIL + JAUH:** 55 m di depan, 22 m tinggi, skala 1,0 —
+  siluet gelap di tengah-atas; beam + pool diskalakan ulang mengikuti
+  altitude (beam scale.y = alt/18, pool y = -(alt-0,1)) supaya tetap
+  menyentuh jalan.
+- **Polisi mengapit DEKAT:** 2 cruiser di kiri-depan (+5 m) + kanan-depan
+  (+8 m), 1 di 21 m, 2 roadblock berdampingan di 43 m menghadap pemain.
+  Panel statis: "HKPD RESPONSE — 7 UNITS CODE 4" + IBIS-43 5m RAMMING,
+  TARPON-10 9m RAMMING, HERON-17 21m PURSUIT, KESTREL-31 43m ROADBLOCK,
+  MARLIN-26 43m ROADBLOCK (bukan baris hasil hitung — tanpa GULL-1/ARMOR-1).
+- **Billboard FLAMINGO FM di kanan, diputar ~35°** (rotation.y = PI/2+0,6)
+  menghadap timur-laut — menghadap timur murni jadi edge-on dari chase cam
+  (kamera di utara) dan hanya terbaca sebagai sliver. Tiang mengikuti arah
+  lebar yang diputar. 4 palem berbatang MERAH/ORANYE di pantai (x=-196..-199)
+  — batang pakai setColorAt per-instance (trunkMat jadi putih) — batangnya
+  memotong teks billboard ("FLA...N...O FM").
+- **Gedung kiri PEACH/SALMON:** palet BUILDING_BEACH baru untuk baris
+  beachfront (bukan palet low umum); shopfront jadi pink (#e85a7a, dulu
+  #2a2d33); papan teal "VALE" di gedung beach z=-24 (fasad barat);
+  tekstur jendela dasarnya diterangkan (#c8ccd2, dulu #8a97a8) supaya
+  warna peach terbaca pastel cerah, bukan coklat gelap.
+- **Garis kuning ganda** di tengah jalan pantai (x=-193,2 / -191,2, 3 px,
+  #ffd23d); garis putih tengah dihilangkan untuk s=-192.
+- **HUD lengkap ala contoh:** misi "CH 5 PAPER MOON" + timer 2:06 + STAGE
+  3/4 (75%), $38,420 + "DAY 1 18:52" + 4 emas 1 abu + "IN SIGHT", WASP SMG
+  disorot oranye (.wslot.hot) + PISTOL 12/0, minimap "CORAL STRAND" +
+  RESPECT 4 + bar health hijau + bar ARMOUR biru (baru, hanya mode hero),
+  dialog JUNO REYES / WHEELWOMAN (potret "JR", pink) + teks contoh, radio
+  "WAVE 88.1 : Neon Drive", speedo "VESPERA GT CONDITION 100% / 151 KM/H /
+  GEAR 04". Elemen baru index.html: #police-title, #rep-label, #armour-row,
+  #cond-num, #gear, #dlg-role + CSS-nya; hud.js membaca hero.* baru.
+- **KOREKSI Romi (tengah jalan): tank + macet + pejalan kaki TETAP — jangan
+  dihapus.** Versi pertama round 3 menghapus ketiganya (jalan terbuka,
+  trotoar kosong); Romi membatalkan penghapusan itu. Dikembalikan: tank
+  (spawnTank eksplisit, wanted 3 tidak memicunya), macet 11 mobil (grid
+  lajur kiri x-6 + kanan x+1, z+14..+58, menghindari flanker/roadblock),
+  24 pejalan kaki (pasir + avenue + trotoar barat x=-199 + timur x=-181).
+  3 mobil jauh dekat matahari (+70/+85/+100) tetap dipertahankan.
+- **Posisi tank — 3x iterasi:** (x-4, z-3) memenuhi lensa (kamera rendah
+  duduk di situ, turret menutupi jalan + speedo); (x+5, z-2) terpotong tepi
+  kiri (46° off-axis, laras keluar frame); final (x+5, z+2, sudut PI-0,9)
+  — 29° kiri sumbu, 12 m dari kamera, besar + utuh, laras memanjang ke
+  kiri, jelas tank (bodi olive + roda rantai + turret bundar + meriam).
+- **Bug saat implementasi:** parkir peds ke (150,150) sambil men-null-kan
+  loop/path membuat stepPed crash (membaca ped.loop[loopIdx]) — perbaikan:
+  hanya pindah x/z, loop tetap utuh (2 detik sim hanya gerak ~2 m).
+- **QA (18 Nov):** selftest **85/85 PASS**; shots **PASS, 0 errors**
+  (1-hero.jpg 179.594 B, wanted=3, policeCars=6); playtest **PASS, 0 errors**
+  (playtest5, sebelum koreksi — koreksi hanya menyentuh shots.js + tests,
+  tidak ada kode gameplay: boot fps=10, jalan 3,4 m, masuk mobil, nyetir
+  18,2 m/s / 14,0 m, keluar 1,6 m, wanted 3, misi "Drive to the docks",
+  HUD + minimap OK, fps=4). Screenshot diverifikasi visual: GT pink +
+  spoiler hitam besar di tengah-bawah, tank jelas di kiri, macet dua lajur
+  sampai horizon, trotoar ramai dua sisi, 2 cruiser mengapit dekat, heli
+  kecil + beam di tengah-atas, billboard FLAMINGO FM pink besar di kanan
+  terpotong palem merah, gedung peach + VALE di kiri, matahari silau di
+  ujung jalan, HUD lengkap sesuai contoh.
+- **Notes:** dossier tetap 1 screenshot (main.ts menerima 1-4); dialog hero
+  Juno Reyes, gameplay normal tetap Mama Rosa; pistol 0/0 di awal (by
+  design); draw-call di atas budget lunak 60 (tidak ada test yang
+  meng-assert); fps playtest 4-10 di SwiftShader (software rendering —
+  lambat di sini, cepat di hardware nyata); bentuk awan debu bervariasi
+  sedikit per run (random) tapi world state deterministik; potret "JR"
+  berupa inisial di lingkaran pink (kacamata tidak digambar literal).

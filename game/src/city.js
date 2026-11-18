@@ -218,11 +218,15 @@ function makeGroundTexture() {
     }
   }
   // Lane dashes (centre of each street) + crosswalk stripes at intersections.
+  // The beach boulevard (s = -192) has NO white centre dashes — instead it
+  // carries DOUBLE YELLOW lines, left of the hero car, like the #1 entry.
   g.fillStyle = '#e8e4d8';
   for (const s of STREETS) {
-    for (let d = -192; d < 192; d += 16) {
-      g.fillRect(toPx(d), toPx(s) - 2, 8 * S, 4);
-      g.fillRect(toPx(s) - 2, toPx(d), 4, 8 * S);
+    if (s !== -192) {
+      for (let d = -192; d < 192; d += 16) {
+        g.fillRect(toPx(d), toPx(s) - 2, 8 * S, 4);
+        g.fillRect(toPx(s) - 2, toPx(d), 4, 8 * S);
+      }
     }
     for (const t of STREETS) {
       for (let k = -2; k <= 2; k += 1) {
@@ -230,6 +234,11 @@ function makeGroundTexture() {
         g.fillRect(toPx(t) - 10 + k * 4 * S * 0.5, toPx(s) + 4 * S, 2 * S, 3 * S);
       }
     }
+  }
+  // Double yellow centre lines on the beach boulevard (x = -193.2 / -191.2).
+  g.fillStyle = '#ffd23d';
+  for (const off of [-1.2, 0.8]) {
+    g.fillRect(toPx(-192 + off) - 1.5, 0, 3, SIZE);
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -249,9 +258,11 @@ function makeWindowTexture(rows, cols, rng) {
   if (!c) return null;
   const g = c.getContext('2d');
   const base = g.createLinearGradient(0, 0, 0, H);
-  base.addColorStop(0, '#8a97a8');
-  base.addColorStop(0.5, '#7a8a9a');
-  base.addColorStop(1, '#6a7a8a');
+  // Light grey-blue base: the facade colour comes through the instance
+  // colour, so a dark base would mute the peach/salmon pastels to brown.
+  base.addColorStop(0, '#c8ccd2');
+  base.addColorStop(0.5, '#bcc2ca');
+  base.addColorStop(1, '#aab2bc');
   g.fillStyle = base;
   g.fillRect(0, 0, W, H);
   const cw = W / cols, rh = H / rows;
@@ -294,10 +305,11 @@ function makeWindowTexture(rows, cols, rng) {
       }
     }
   }
-  // Ground-floor shopfront (canvas bottom = ground floor): dark plate,
-  // warm awning strip, large glass panes.
+  // Ground-floor shopfront (canvas bottom = ground floor): PINK plate,
+  // warm awning strip, large glass panes — the #1 entry's pink ground
+  // floors, not a dark slab.
   const shopY = H - rh;
-  g.fillStyle = '#2a2d33';
+  g.fillStyle = '#e85a7a';
   g.fillRect(0, shopY, W, rh);
   g.fillStyle = '#ffb36b';
   g.fillRect(0, shopY, W, 10);
@@ -524,7 +536,10 @@ export function buildCity(seed) {
       dummy.rotation.set(0, 0, 0);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
-      mesh.setColorAt(i, colorObj.setHex(rng.pick(band.colors)));
+      // Beachfront row: peach/salmon palette (the #1 entry's buildings on
+      // the left), not the generic low-band pastels.
+      const palette = b.district === 'beach' ? CONFIG.PALETTE.BUILDING_BEACH : band.colors;
+      mesh.setColorAt(i, colorObj.setHex(rng.pick(palette)));
     });
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -619,9 +634,25 @@ export function buildCity(seed) {
     signMeshes.push(sign);
   });
 
+  // ---- "VALE" sign on the beachfront (teal, the #1 entry's landmark) ----
+  // On the beach building at z=-24, west face (toward the boulevard) —
+  // the hero shot drives south past it on the left, above the balconies.
+  const valeB = beachRow.find((b) => b.z === -24);
+  if (valeB) {
+    const valeTex = makeSignTexture('VALE', '#2dd4bf', rng);
+    const valeMat = valeTex
+      ? new THREE.MeshBasicMaterial({ map: valeTex, transparent: false })
+      : new THREE.MeshBasicMaterial({ color: 0x2dd4bf });
+    const vale = new THREE.Mesh(new THREE.PlaneGeometry(14, 3.5), valeMat);
+    vale.position.set(valeB.x - valeB.w / 2 - 0.15, valeB.h * 0.82, valeB.z);
+    vale.rotation.y = -Math.PI / 2; // face west, toward the boulevard
+    vale.name = 'sign-vale';
+    group.add(vale);
+  }
+
   // ---- FLAMINGO FM billboard on the beach (the #1 entry's landmark) ----
   // A big pink billboard on the sand, facing the boulevard — the hero shot
-  // drives north past it on the left, sea behind it, sun glare ahead.
+  // drives south past it on the right, red palm trunks cutting its text.
   function makeBillboardTexture() {
     const c = makeCanvas(512, 256);
     if (!c) return null;
@@ -650,18 +681,23 @@ export function buildCity(seed) {
     ? new THREE.MeshBasicMaterial({ map: bbTex })
     : new THREE.MeshBasicMaterial({ color: 0xff2d78 });
   const billboard = new THREE.Mesh(new THREE.PlaneGeometry(18, 9), bbMat);
-  billboard.position.set(-196, 6.5, 12);
-  billboard.rotation.y = Math.PI / 2; // face east, toward the boulevard
+  // Angled ~35° toward the oncoming (southbound) traffic — a billboard
+  // facing due east is edge-on from the chase cam (which sits north of
+  // it), so its face must turn north-east for the text to read.
+  billboard.position.set(-198, 6.5, 15);
+  billboard.rotation.y = Math.PI / 2 + 0.6;
   billboard.name = 'flamingo-fm-billboard';
   group.add(billboard);
   const bbPostMat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.8 });
-  for (const dz of [-5.5, 5.5]) {
+  // Posts under the board, inset along its (rotated) width direction.
+  const bbWdx = Math.cos(Math.PI / 2 + 0.6), bbWdz = -Math.sin(Math.PI / 2 + 0.6);
+  for (const s of [-5.5, 5.5]) {
     const post = new THREE.Mesh(boxGeo, bbPostMat);
     post.scale.set(0.5, 6.5, 0.5);
-    post.position.set(-196, 3.25, 12 + dz);
+    post.position.set(-198 + s * bbWdx, 3.25, 15 + s * bbWdz);
     group.add(post);
   }
-  colliders.push({ minX: -198, minZ: 3, maxX: -194, maxZ: 21 });
+  colliders.push({ minX: -203, minZ: 7, maxX: -193, maxZ: 23 });
 
   // ---- Palms along the beachfront + plaza (curved trunks + fronds) ----
   // A palm is a gently leaning curved trunk (TubeGeometry, not a straight
@@ -672,6 +708,12 @@ export function buildCity(seed) {
   for (let i = 0; i < 8; i += 1) {
     palmSpots.push({ x: rng.range(-40, 40), z: rng.range(-40, 40) });
   }
+  // Red/orange-trunked palms on the beach (the #1 entry's row on the
+  // right): their trunks cut across the FLAMINGO FM billboard, so its
+  // text reads partially obscured ("FLA...N...O FM").
+  for (const [x, z] of [[-198, 30], [-196, 12], [-199, -6], [-197, -24]]) {
+    palmSpots.push({ x, z, red: true });
+  }
   const trunkCurve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0, 0, 0),
     new THREE.Vector3(0.22, 1.6, 0),
@@ -679,7 +721,9 @@ export function buildCity(seed) {
     new THREE.Vector3(0.42, 4.8, 0),
   ]);
   const trunkGeo = new THREE.TubeGeometry(trunkCurve, 8, 0.22, 8, false);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 1 });
+  // White base: the per-instance colour (brown, or red/orange for the
+  // beach row) carries the trunk colour.
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, palmSpots.length);
   // One drooping frond: a tapered plane, curved down toward the tip.
   function makeFrondGeo() {
@@ -716,6 +760,9 @@ export function buildCity(seed) {
     dummy.rotation.set(0, lean, 0);
     dummy.updateMatrix();
     trunks.setMatrixAt(i, dummy.matrix);
+    trunks.setColorAt(i, colorObj.setHex(p.red
+      ? rng.pick([0xc8552e, 0xd86a2a, 0xb84a28])
+      : 0x7a5a3a));
     dummy.position.set(p.x, 6.6, p.z);
     dummy.scale.set(1, 0.55, 1);
     dummy.rotation.set(0, 0, 0);
@@ -735,6 +782,7 @@ export function buildCity(seed) {
     }
   });
   trunks.instanceMatrix.needsUpdate = true;
+  if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true;
   crowns.instanceMatrix.needsUpdate = true;
   fronds.instanceMatrix.needsUpdate = true;
   if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
