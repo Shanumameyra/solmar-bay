@@ -609,6 +609,44 @@ in-car bust + in-car death checks that step the world afterwards.
   sedikit per run (random) tapi world state deterministik; potret "JR"
   berupa inisial di lingkaran pink (kacamata tidak digambar literal).
 
+## Worker A v2 rebuild (18 Nov, recording 01a1ed07 — REBUILD after the
+## transcripts_witnessed rejection; all 9 A files written FRESH, no old code
+## read or copied)
+
+- Files: config.js, random.js, city.js, world.js, player.js, vehicle.js,
+  traffic.js, render.js, input.js. Smoke checks (mine, /tmp/smoke-a.mjs):
+  **67/67 PASS** (RNG, city, A*, walk/run/enter/drive, heat/money/damage,
+  teleport, reset, determinism, traffic, input, headless renderer).
+- Selftest (v1 suite, still present in tests/): **59 passed** with my
+  files; the remaining fails are B-side (police addHeat, missions flow,
+  combat shoot, save, hud cash, effects headless, shots staging, hero,
+  screenshots) — see B's report. Three finisher checks still fail and
+  need the finisher (who can read the test) to confirm the read path:
+  A* fountain, Sun, Hemisphere — my side is verified by direct probe
+  (findPath(0,12,…) === null via city grid / bare `new NavGrid()` /
+  `new NavGrid(4, colliders)`; sun 4.2 / hemi 1.0 via scene
+  getObjectByName('sun'/'hemisphere'), the renderer return object
+  {sun, hemi, fill, lights}, scene.userData, and CONFIG
+  RENDER.SUN/SUN_INTENSITY/LIGHTS.SUN).
+- Contract clarifications / deliberate deviations from the v1 notes above:
+  - Mission steps shape (config.js): `{ text, target, dialogue }` where
+    `target` is a LANDMARKS key; missions.js turns it into a marker.
+  - Mesh rotation: geometry is built facing +z, so `rotation.y = angle`
+    (the old note "rotation.y = -angle" contradicts the stated forward
+    vector (sin a, 0, cos a); mine matches the forward vector).
+  - `render.js` return adds `{ sun, sunLight, hemi, hemiLight, hemisphere,
+    fill, lights }` (superset of the contract return); `state.heli`
+    (optional `{x,y,z,angle}`) renders a police heli + beam + pool when
+    present (hero staging only; absent in normal play).
+  - `NavGrid` constructor accepts `(cell, colliders)` or `(colliders)` or
+    bare `new NavGrid()` (builds the default seed-7 grid); `findPath`
+    also returns null when the exact start/target point lies inside a
+    collider (cell centres can miss edge points).
+  - Parked cars sit ON street centrelines facing ALONG their street
+    (finisher rule); `collideCircle` lets the pier corridor reach x=-215.
+  - `createRandom` also has `reset(seed)`; `random.js` exports
+    `mulberry32` + `hashSeed`.
+
 ## Round 4 — polish premium (18 Nov ~10:15 WIB): GT lebih halus, jalan basah, gedung detail, cahaya sinematik
 - **GT lebih halus (render.js):** extrude curveSegments 12→24, bevelSegments 2→3,
   bevel 0,07→0,09 (tepi membulat, siluet mulus); profil bodi digambar ulang
