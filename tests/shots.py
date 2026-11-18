@@ -1,8 +1,11 @@
-# Solmar Bay — retake the ONE hero screenshot (fast).
+# Solmar Bay — retake the supporting screenshots (fast).
 # Run: ~/workspace/tools/pw-venv/bin/python tests/shots.py
 # Requires the static server: node serve.ts  (serves game/ on :8080)
-# The shot is 1600x900 JPEG q82 (HD); fails if a pageerror / console error
-# appears, or if the shot exceeds the 256 KiB dossier cap.
+# Captures 2-title.jpg, 3-onfoot.jpg, 4-mission.jpg at 1600x900 JPEG q82
+# (HD); fails if a pageerror / console error appears, or if a shot exceeds
+# the 256 KiB dossier cap.
+# NOTE: 1-hero.jpg is NOT captured here — it is Romi's approved image and
+# must never be overwritten by this script.
 import asyncio
 import os
 import sys
@@ -12,7 +15,9 @@ from playwright.async_api import async_playwright
 BASE = "http://localhost:8080/index.html"
 OUT = os.path.join(os.path.dirname(__file__), "..", "screenshots")
 SHOTS = [
-    ("hero", "1-hero.jpg"),
+    ("title", "2-title.jpg"),
+    ("onfoot", "3-onfoot.jpg"),
+    ("mission", "4-mission.jpg"),
 ]
 MAX_BYTES = 262144
 
@@ -44,31 +49,22 @@ async def main():
             flag = "OK" if size <= MAX_BYTES else "TOO BIG"
             if size > MAX_BYTES:
                 ok = False
-            print(f"{fname}: {size} bytes ({flag}), wanted={gta.get('wanted')} "
-                  f"money=${gta.get('money')} mission={gta.get('mission')!r} "
+            print(f"{fname}: {size} bytes ({flag}), screen={gta.get('screen')} "
+                  f"wanted={gta.get('wanted')} money=${gta.get('money')} mission={gta.get('mission')!r} "
                   f"policeCars={gta.get('policeCars')}")
-            # Staging checks: the hero must drive on the beach (sea in
-            # frame) at 3 stars, with a few background pedestrians, an
-            # open road ahead (no jam, no tank) and 5 cruisers on its tail.
-            if name == "hero":
-                st = await page.evaluate("""() => {
-                    const s = window.__GTA.state;
-                    const car = s.player.car;
-                    const bg = (s.peds || []).filter(p => car && Math.hypot(p.x - car.x, p.z - car.z) < 100).length;
-                    const police = (s.cars || []).filter(c => c.isPolice).length;
-                    return { carX: car ? car.x : null, bgPeds: bg, wanted: s.wanted,
-                             police, heroHud: !!s.heroHud, heroCam: !!s.heroCam };
-                }""")
-                if st["carX"] is None or st["carX"] >= -168:
-                    print(f"  !! hero car is not on the beach (x={st['carX']})"); ok = False
-                if st["bgPeds"] < 3:
-                    print(f"  !! hero has only {st['bgPeds']} background peds"); ok = False
-                if st["wanted"] != 3:
-                    print(f"  !! hero wanted is {st['wanted']}, expected 3"); ok = False
-                if st["police"] != 5:
-                    print(f"  !! hero has {st['police']} police units, expected 5 (cruisers, no tank)"); ok = False
-                if not st["heroHud"] or not st["heroCam"]:
-                    print(f"  !! hero staging flags missing (hud={st['heroHud']} cam={st['heroCam']})"); ok = False
+            info = gta.get('info') or {}
+            if name == "title":
+                if gta.get('screen') != 'title':
+                    print(f"  !! title shot screen is {gta.get('screen')!r}, expected 'title'"); ok = False
+                if not info.get('inCar'):
+                    print("  !! title shot has no car"); ok = False
+            if name == "onfoot":
+                if info.get('inCar'):
+                    print("  !! onfoot shot is in a car, expected on foot"); ok = False
+            if name == "mission":
+                mission = (gta.get('mission') or '').lower()
+                if 'docks' not in mission:
+                    print(f"  !! mission shot objective is {gta.get('mission')!r}, expected the docks run"); ok = False
         await browser.close()
     print("errors:", errs if errs else "none")
     if errs:

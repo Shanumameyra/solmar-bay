@@ -203,7 +203,7 @@ export function createHud(doc) {
         }
       }
       // Health.
-      const hp = Math.max(0, Math.round(p.hp || 0));
+      const hp = hero && hero.hp != null ? hero.hp : Math.max(0, Math.round(p.hp || 0));
       const maxHp = p.maxHp || 100;
       this.set('healthNum', String(hp));
       this.setStyle('healthFill', 'width', Math.round((hp / maxHp) * 100) + '%');
@@ -240,7 +240,7 @@ export function createHud(doc) {
       this.set('objective', hero && hero.objective ? hero.objective : (m.objective || ''));
       const marker = m.marker || state.taxiMarker || null;
       const dist = marker ? Math.round(Math.hypot(p.x - marker.x, p.z - marker.z)) : null;
-      this.set('objectiveDist', dist != null ? ' · ' + dist + ' m' : '');
+      this.set('objectiveDist', hero && hero.objectiveDist != null ? hero.objectiveDist : (dist != null ? ' · ' + dist + ' m' : ''));
       const timer = m.timer || 0;
       this.set('missionTimer', hero && hero.timer ? ' · ' + hero.timer : (timer > 0 ? ' · ' + fmtTimer(timer) : ''));
       this.set('stageLabel', hero && hero.stageLabel ? hero.stageLabel : (active ? 'STAGE ' + (stepIdx + 1) + '/' + steps.length : 'STAGE —'));
@@ -287,7 +287,7 @@ export function createHud(doc) {
       // Location (bottom-left): district + street — or the hero shot's
       // CORAL STRAND.
       this.set('locName', hero && hero.locName ? hero.locName : districtNameAt(p.x, p.z));
-      this.set('locStreet', streetNameAt(p.x, p.z));
+      this.set('locStreet', hero && hero.locStreet ? hero.locStreet : streetNameAt(p.x, p.z));
       // REP (bottom-left): missions done / 3 — or the hero shot's RESPECT 4.
       if (hero && hero.rep) {
         this.set('repLabel', hero.rep.label);
@@ -314,7 +314,7 @@ export function createHud(doc) {
       if (p.car) {
         const chp = Math.max(0, p.car.hp || 0);
         const cmax = p.car.maxHp || 100;
-        this.setStyle('condFill', 'width', Math.round((chp / cmax) * 100) + '%');
+        this.setStyle('condFill', 'width', hero && hero.condPct ? hero.condPct : Math.round((chp / cmax) * 100) + '%');
         this.setStyle('condFill', 'background', chp <= 35 ? '#ff4444' : chp <= 60 ? '#ffb020' : '#39ff88');
         this.set('condNum', hero && hero.condPct ? hero.condPct : Math.round((chp / cmax) * 100) + '%');
       }

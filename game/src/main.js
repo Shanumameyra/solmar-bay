@@ -79,6 +79,12 @@ function runShot(name) {
   const g = buildGame();
   const { world, state, renderer, hud, minimap, systems, effects } = g;
   const info = stageShot(name, world, systems);
+  // The staged shot decides its screen: 'title' shows the title overlay
+  // over the live city, everything else plays with the HUD.
+  const screen = (info && info.screen) || 'play';
+  // Shot mode has no first-run controls hint: the staged frame is the
+  // finished screenshot, not a tutorial.
+  hud.hintT = 99;
   renderer.snapCamera();
   // Draw twice so particles / HUD settle, then signal the screenshot runner.
   let painted = 0;
@@ -95,7 +101,7 @@ function runShot(name) {
     if (painted === 1 && effects) effects.update(0.35);
     renderer.draw(state, effects);
     effects.applyCamera(renderer.camera, 1 / 60);
-    hud.update(state, 'play', 0);
+    hud.update(state, screen, 0);
     minimap.draw(state);
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
@@ -103,7 +109,7 @@ function runShot(name) {
       window.__GTA = {
         shotReady: true,
         shot: name,
-        screen: 'play',
+        screen,
         wanted: state.wanted || 0,
         money: state.money || 0,
         mission: (state.mission && state.mission.objective) || '',

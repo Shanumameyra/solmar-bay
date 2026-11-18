@@ -67,7 +67,7 @@ export const CONFIG = {
   // ---- Car models (built from boxes, distinct silhouettes) ----
   CAR_MODELS: {
     sedan:  { len: 4.4, wid: 1.9, hgt: 1.35, color: 0x3a6fd8, top: 38, name: 'Sedan' },
-    sports: { len: 4.2, wid: 1.9, hgt: 1.15, color: 0xff2d92, top: 46, name: 'Vespera GT' },
+    sports: { len: 4.2, wid: 1.9, hgt: 1.15, color: 0xc8d2e0, top: 46, name: 'Vespera GT' },
     taxi:   { len: 4.4, wid: 1.9, hgt: 1.4,  color: 0xf2b705, top: 38, name: 'Taxi' },
     truck:  { len: 6.2, wid: 2.3, hgt: 2.2,  color: 0x8a7d6b, top: 30, name: 'Truck' },
     van:    { len: 5.0, wid: 2.0, hgt: 1.9,  color: 0x9aa5b1, top: 34, name: 'Van' },
@@ -126,8 +126,8 @@ export const CONFIG = {
       intro: 'Pick up the package at the docks, bring it to Rosa.',
       steps: ['Drive to the docks', 'Collect the package', 'Deliver to the café'] },
     { id: 'M2', name: 'Hot Wheels', reward: 500, time: 0,
-      intro: 'Steal the pink sports car at the beachfront. Bring it to the garage.',
-      steps: ['Steal the pink sports car', 'Deliver it to the garage'] },
+      intro: 'Steal the silver sports car at the beachfront. Bring it to the garage.',
+      steps: ['Steal the silver sports car', 'Deliver it to the garage'] },
     { id: 'M3', name: 'The Getaway', reward: 800, time: 150,
       intro: 'Three stars, three cruisers. Reach the safehouse in the barrios.',
       steps: ['Reach the safehouse', 'Lose the heat'] },
@@ -165,7 +165,7 @@ export const CONFIG = {
     HOSPITAL: 'hospital',
     PRECINCT: 'precinct',
     GUNSHOP: 'gunshop',
-    BEACH_CAR: 'beachCar', // the pink sports car for M2
+    BEACH_CAR: 'beachCar', // the silver sports car for M2
   },
 
   // ---- Render budget ----
@@ -192,7 +192,7 @@ export const CONFIG = {
     HEMI_SKY: 0xe8a0b8,
     HEMI_GROUND: 0x4a2e2a,
     HEMI_INTENSITY: 1.0,
-    ASPHALT: 0x4a4448,
+    ASPHALT: 0x8a8a90,
     SIDEWALK: 0xa89888,
     SAND: 0xe0a878,
     SEA: 0x2a9ab0,

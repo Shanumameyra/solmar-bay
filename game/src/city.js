@@ -160,8 +160,9 @@ function makeGroundTexture() {
   const g = c.getContext('2d');
   const S = SIZE / (HALF * 2); // px per metre
   const toPx = (v) => (v + HALF) * S;
-  // Base: asphalt (warm dark, not near-black).
-  g.fillStyle = '#4a4448';
+  // Base: asphalt (neutral light-grey, not near-black) — the Gemini
+  // reference road reads as light grey, not dark orange-brown.
+  g.fillStyle = '#8a8a90';
   g.fillRect(0, 0, SIZE, SIZE);
   // Asphalt speckle (fixed seed — does not consume the layout rng).
   const srng = createRandom(1234);
@@ -194,7 +195,7 @@ function makeGroundTexture() {
     g.fillRect(toPx(s) - w, 0, w * 2, SIZE);
   }
   // Re-lay asphalt over the street centres so sidewalks read as edges.
-  g.fillStyle = '#4a4448';
+  g.fillStyle = '#8a8a90';
   for (const s of STREETS) {
     const w = (CONFIG.CITY.STREET / 2) * S;
     g.fillRect(0, toPx(s) - w, SIZE, w * 2);
@@ -241,24 +242,25 @@ function makeGroundTexture() {
     g.fillRect(toPx(-192 + off) - 1.5, 0, 3, SIZE);
   }
   // Wet-road reflections (painted into the texture — the street is static):
-  // a warm sun streak down the beach boulevard, brightest at the south
+  // a pale sun sheen down the beach boulevard, brightest at the south
   // end (toward the sun at z=+700) and fading north, so the wet asphalt
-  // carries the sunset pink/orange like the reference's wet boulevard.
+  // carries a soft light sheen like the reference's grey road — NOT a
+  // saturated orange streak (that made the foreground road read orange).
   const streak = g.createLinearGradient(0, toPx(30), 0, toPx(200));
   streak.addColorStop(0, 'rgba(255,120,110,0)');
-  streak.addColorStop(0.55, 'rgba(255,140,90,0.18)');
-  streak.addColorStop(1, 'rgba(255,160,90,0.42)');
+  streak.addColorStop(0.55, 'rgba(255,200,185,0.10)');
+  streak.addColorStop(1, 'rgba(255,205,190,0.20)');
   g.fillStyle = streak;
   g.fillRect(toPx(-195.5), toPx(30), toPx(-188.5) - toPx(-195.5), toPx(200) - toPx(30));
   // Brighter core of the streak (the sun's direct reflection).
   const core = g.createLinearGradient(0, toPx(60), 0, toPx(200));
-  core.addColorStop(0, 'rgba(255,190,130,0)');
-  core.addColorStop(1, 'rgba(255,200,140,0.5)');
+  core.addColorStop(0, 'rgba(255,210,195,0)');
+  core.addColorStop(1, 'rgba(255,225,205,0.22)');
   g.fillStyle = core;
   g.fillRect(toPx(-193.2), toPx(60), toPx(-190.8) - toPx(-193.2), toPx(200) - toPx(60));
   // Pink reflection of the FLAMINGO FM billboard on the wet road edge.
   const bbGlow = g.createRadialGradient(toPx(-198), toPx(15), 0, toPx(-198), toPx(15), 12 * S);
-  bbGlow.addColorStop(0, 'rgba(255,90,168,0.30)');
+  bbGlow.addColorStop(0, 'rgba(255,90,168,0.15)');
   bbGlow.addColorStop(1, 'rgba(255,90,168,0)');
   g.fillStyle = bbGlow;
   g.fillRect(toPx(-210), toPx(3), 24 * S, 24 * S);
@@ -441,9 +443,13 @@ export function buildCity(seed) {
   // the asphalt reads as rain-slicked — it mirrors the pink/orange sunset
   // env map instead of a flat matte grey (the reference's wet street).
   const groundTex = makeGroundTexture();
+  // DIAGNOSTIC (round 8): fully matte ground — roughness 1.0, metalness
+  // 0, envMapIntensity 0 — to test whether the bright orange band at the
+  // bottom-centre is the ground's specular/env reflection at all. If the
+  // band survives this, it is NOT the ground (sprite/mesh/HUD instead).
   const groundMat = groundTex
-    ? new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.18, metalness: 0.45, envMapIntensity: 0.8 })
-    : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.ASPHALT, roughness: 0.18, metalness: 0.45 });
+    ? new THREE.MeshStandardMaterial({ map: groundTex, roughness: 1.0, metalness: 0.0, envMapIntensity: 0.0 })
+    : new THREE.MeshStandardMaterial({ color: CONFIG.PALETTE.ASPHALT, roughness: 1.0, metalness: 0.0 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2, HALF * 2), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;

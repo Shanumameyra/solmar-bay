@@ -21,12 +21,15 @@ const PAL = CONFIG.PALETTE;
 // peach-orange at the horizon — the #1 entry's warm haze, not a hard
 // orange band. The warm band sits at ~50-68% (the horizon on screen /
 // the sphere's equator), so the sky reads peach at eye level.
+// Brightened (round 8, Gemini reference): the mid-sky pink/peach stops
+// are lighter so the sky reads bright pink like the reference
+// (RGB ~179,115,173), not dark mauve.
 function sunsetStops(grad) {
   grad.addColorStop(0, '#3d1e55');
-  grad.addColorStop(0.22, '#7e2f70');
-  grad.addColorStop(0.38, '#c95a7e');
-  grad.addColorStop(0.5, '#ff7a4a');
-  grad.addColorStop(0.68, '#ff9a6a');
+  grad.addColorStop(0.22, '#8a3578');
+  grad.addColorStop(0.38, '#d96a92');
+  grad.addColorStop(0.5, '#ff8a5a');
+  grad.addColorStop(0.68, '#ffab7a');
   grad.addColorStop(1, '#ffd9a8');
 }
 
@@ -111,7 +114,7 @@ function makeGlareSprite() {
   const tex = makeGlowTexture();
   if (!tex) return null;
   const mat = new THREE.SpriteMaterial({
-    map: tex, color: 0xff9a4d, transparent: true, opacity: 0.7,
+    map: tex, color: 0xff9a4d, transparent: true, opacity: 0.85,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
@@ -128,7 +131,7 @@ function makeHaloSprite() {
   const tex = makeGlowTexture();
   if (!tex) return null;
   const mat = new THREE.SpriteMaterial({
-    map: tex, color: 0xffb060, transparent: true, opacity: 0.22,
+    map: tex, color: 0xffb060, transparent: true, opacity: 0.32,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
@@ -145,7 +148,7 @@ function makeHorizonSprite() {
   const tex = makeGlowTexture();
   if (!tex) return null;
   const mat = new THREE.SpriteMaterial({
-    map: tex, color: 0xff9a50, transparent: true, opacity: 0.3,
+    map: tex, color: 0xff9a50, transparent: true, opacity: 0.4,
     blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
   });
   const sprite = new THREE.Sprite(mat);
@@ -223,15 +226,43 @@ function makeEnvironment(renderer) {
   return envRT.texture;
 }
 
+// Neutral (grey) equirect environment, ONLY for the silver GT's paint.
+// The scene's environment is the pink sunset — a high-metalness paint
+// reflecting it reads as purple-magenta, not silver. A metal's colour is
+// what it reflects, so the GT gets its own neutral sky (bright white-grey
+// above, mid grey at the horizon, dark grey below): with metalness 0.85
+// the paint reflects this instead of the sunset, and the car reads as
+// bright silver even in the warm sunset light. Guarded (returns null
+// headless) like makeEnvironment.
+function makeNeutralEnv() {
+  if (typeof document === 'undefined') return null;
+  const c = document.createElement('canvas');
+  c.width = 32; c.height = 16;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 16);
+  grad.addColorStop(0, '#f4f6f8');    // zenith: bright white-grey
+  grad.addColorStop(0.45, '#c9ced4'); // horizon: mid silver-grey
+  grad.addColorStop(0.55, '#8a8f96'); // just below the horizon
+  grad.addColorStop(1, '#3a3d42');    // ground: dark grey
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 32, 16);
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export function createRenderer(canvas) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  // Exposure 1.32: the deeper shadows (HEMI 1.0) need a touch more
-  // exposure so the highlights stay rich without the mid-tones going muddy.
-  renderer.toneMappingExposure = 1.32;
+  // Exposure 1.45 (was 1.32): the Gemini reference is brighter overall —
+  // the sky pink, the building facades and the road all read a step
+  // lighter. The silver GT stays silver (its neutral envMap + neutral
+  // fill keep it grey, just a touch brighter).
+  renderer.toneMappingExposure = 1.45;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
@@ -265,12 +296,17 @@ export function createRenderer(canvas) {
   sun.position.set(-190, 55, 350);
   sun.castShadow = true;
   // Warm fill from the north-west (no shadow): lifts the camera-facing
-  // facades + the GT's rear, which the low southern sun leaves in shade,
+  // facades + the GT's front, which the low southern sun leaves in shade,
   // so the pastel buildings read bright like the reference instead of dark.
-  // 0.85 (was 0.7): a brighter fill lifts the shadowed west side of the
+  // 1.5 (was 1.1, round 8): a brighter fill lifts the shadowed west side of the
   // road + the facades, so the boulevard never reads dark/plain — the
-  // Top 5 forbids a too-dark road.
-  const fill = new THREE.DirectionalLight(0xffc0a8, 0.85);
+  // Top 5 forbids a too-dark road — and so the silver GT's front (facing
+  // away from the sun) stays bright silver instead of falling into a
+  // purple shadow. The fill is NEUTRAL white (0xffffff) so it lights
+  // the silver neutrally — a warm fill tints the silver pink. The Gemini
+  // reference's left buildings read much brighter (RGB ~194,80,64 vs the
+  // old ~109,59,60); the stronger neutral fill is the main lever for that.
+  const fill = new THREE.DirectionalLight(0xffffff, 1.5);
   fill.position.set(-150, 150, -200);
   scene.add(fill);
   sun.shadow.mapSize.set(CONFIG.RENDER.SHADOW_MAP, CONFIG.RENDER.SHADOW_MAP);
@@ -400,8 +436,16 @@ export function createRenderer(canvas) {
     return s;
   }, 1.5);
   const gtPaint = new THREE.MeshStandardMaterial({
-    color: CONFIG.CAR_MODELS.sports.color, roughness: 0.22, metalness: 0.75,
-    envMapIntensity: 1.2,
+    // SILVER: a metal's colour is what it reflects. The scene's env is
+    // the pink sunset, so a high-metalness paint reflecting it reads as
+    // purple-magenta — the GT gets its OWN neutral grey env (see
+    // makeNeutralEnv), so it reflects bright silver even in the warm
+    // sunset light. Metalness 0.85 (a real metal has almost no diffuse,
+    // so the pink hemisphere can't tint it); roughness 0.18 for a
+    // polished metallic sheen. The paint colour is a cool steel
+    // blue-grey — the warm sunset light neutralises it to silver.
+    color: CONFIG.CAR_MODELS.sports.color, roughness: 0.18, metalness: 0.85,
+    envMap: makeNeutralEnv(), envMapIntensity: 1.0,
   });
   const gtBodyMesh = new THREE.Mesh(gtBodyGeo, gtPaint);
   gtBodyMesh.castShadow = true;
@@ -435,11 +479,15 @@ export function createRenderer(canvas) {
   }
   // Oval headlights (warm white, emissive) + full-width LED tail bar.
   const gtLightGeo = new THREE.SphereGeometry(0.5, 10, 6);
-  const gtHeadMat = new THREE.MeshStandardMaterial({ color: 0xfff2cc, emissive: 0xffe9b0, emissiveIntensity: 1.4, roughness: 0.3 });
+  const gtHeadMat = new THREE.MeshStandardMaterial({ color: 0xfff2cc, emissive: 0xffe9b0, emissiveIntensity: 2.0, roughness: 0.3 });
   for (const side of [-1, 1]) {
     const hl = new THREE.Mesh(gtLightGeo, gtHeadMat);
-    hl.scale.set(0.36, 0.15, 0.12);
-    hl.position.set(0.58 * side, 0.52, 2.02);
+    // z=2.14: FORWARD of the bevelled nose (the body + its 0.09 bevel
+    // reach z≈2.11 at this height) — at z=2.02 the lamps were buried
+    // inside the nose and invisible from the head-on camera. Bigger
+    // (0.42 wide) so the pair reads clearly from the front.
+    hl.scale.set(0.42, 0.18, 0.12);
+    hl.position.set(0.58 * side, 0.52, 2.14);
     gtGroup.add(hl);
   }
   // LED daytime-running strips under the headlights — a thin emissive
@@ -449,7 +497,8 @@ export function createRenderer(canvas) {
   const gtDrlMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff6d8, emissiveIntensity: 2.0, roughness: 0.3 });
   for (const side of [-1, 1]) {
     const drl = new THREE.Mesh(gtDrlGeo, gtDrlMat);
-    drl.position.set(0.58 * side, 0.44, 2.04);
+    // z=2.16: forward of the bevelled nose, like the headlights above.
+    drl.position.set(0.58 * side, 0.44, 2.16);
     gtGroup.add(drl);
   }
   const gtTailGeo = new THREE.CapsuleGeometry(0.06, 1.4, 3, 8);
@@ -460,7 +509,7 @@ export function createRenderer(canvas) {
   gtGroup.add(gtTail);
   // A BIG BLACK rear wing (blade on two tall struts), wider + higher than
   // the body-colour wing — the #1 entry's VESPERA GT wears a large black
-  // spoiler over the fastback tail, and the black reads against the pink.
+  // spoiler over the fastback tail, and the black reads against the silver.
   const gtWingMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.35, metalness: 0.7 });
   const gtLip = new THREE.Mesh(boxGeo, gtWingMat);
   gtLip.scale.set(2.2, 0.08, 0.6);
@@ -479,6 +528,27 @@ export function createRenderer(canvas) {
     gtGroup.add(strut);
   }
   gtGroup.add(gtGrille);
+  // License plate on the front bumper (the head-on hero shot must show
+  // one): a white plate with dark text, centred below the grille, just
+  // forward of the nose. Guarded headless (no document in the Node
+  // selftest) — falls back to a plain white plate.
+  let gtPlateTex = null;
+  if (typeof document !== 'undefined') {
+    const pc = document.createElement('canvas');
+    pc.width = 128; pc.height = 32;
+    const pg = pc.getContext('2d');
+    pg.fillStyle = '#f2f4f6'; pg.fillRect(0, 0, 128, 32);
+    pg.fillStyle = '#14202c'; pg.font = 'bold 22px sans-serif';
+    pg.textAlign = 'center'; pg.textBaseline = 'middle';
+    pg.fillText('SOLMAR 7', 64, 17);
+    gtPlateTex = new THREE.CanvasTexture(pc);
+    gtPlateTex.colorSpace = THREE.SRGBColorSpace;
+  }
+  const gtPlate = new THREE.Mesh(boxGeo,
+    new THREE.MeshStandardMaterial({ map: gtPlateTex, color: 0xffffff, roughness: 0.4, metalness: 0.2 }));
+  gtPlate.scale.set(0.62, 0.15, 0.02);
+  gtPlate.position.set(0, 0.26, 2.14);
+  gtGroup.add(gtPlate);
   const gtMirrorGeo = new THREE.SphereGeometry(0.07, 12, 8);
   const gtMirrorMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.4, metalness: 0.5 });
   for (const side of [-1, 1]) {
@@ -494,7 +564,7 @@ export function createRenderer(canvas) {
   }
   // Shoulder character lines (thin darker-magenta strips along each flank)
   // + a front splitter — body lines that keep the flanks from reading flat.
-  const gtLineMat = new THREE.MeshStandardMaterial({ color: 0x8f1450, roughness: 0.35, metalness: 0.6 });
+  const gtLineMat = new THREE.MeshStandardMaterial({ color: 0x5a5e66, roughness: 0.35, metalness: 0.6 });
   for (const side of [-1, 1]) {
     const gline = new THREE.Mesh(boxGeo, gtLineMat);
     gline.scale.set(0.03, 0.04, 3.1);
@@ -690,20 +760,28 @@ export function createRenderer(canvas) {
   // ---- The pursuit helicopter (wanted 3+) ----
   // Dark fuselage + spinning main rotor, with a spotlight beam (additive
   // cone) and a glowing pool on the road below. Follows the player.
+  // Round 8 (Gemini reference): the reference heli is BIG and prominent
+  // at top-centre with a bright beam — the beam is brightened
+  // (opacity 0.16 -> 0.35). The pool is kept SMALL (r 3.5, opacity
+  // 0.45): a 5.5 m pool centred on the car reaches almost to the camera
+  // (6 m ahead) and floods the foreground road orange — the reference
+  // foreground is grey, so the pool must stay around the car.
   const heliGroup = new THREE.Group();
   const heliBody = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.6, metalness: 0.3 }));
   heliBody.scale.set(2.2, 1.6, 5.5);
   const heliRotor = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: 0x2a2a30, roughness: 0.5, metalness: 0.5 }));
   heliRotor.scale.set(11, 0.12, 0.5);
   heliRotor.position.y = 1.0;
+  const heliBeamGeo = new THREE.CylinderGeometry(0.8, 3.5, 18, 16, 1, true);
+  heliBeamGeo.translate(0, -9, 0); // top of the cone at the origin (pivot at the heli)
   const heliBeam = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.8, 4.5, 18, 16, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }),
+    heliBeamGeo,
+    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }),
   );
-  heliBeam.position.y = -9;
+  heliBeam.position.y = 0;
   const heliPool = new THREE.Mesh(
-    new THREE.CircleGeometry(4.5, 24),
-    new THREE.MeshBasicMaterial({ map: makeGlowTexture(), color: 0xfff2cc, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }),
+    new THREE.CircleGeometry(3.5, 24),
+    new THREE.MeshBasicMaterial({ map: makeGlowTexture(), color: 0xfff2cc, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false }),
   );
   heliPool.rotation.x = -Math.PI / 2;
   heliPool.position.y = -17.9;
@@ -882,30 +960,49 @@ export function createRenderer(canvas) {
     tankGroup.rotation.y = tank.angle;
   }
 
-  // The pursuit helicopter hovers ahead of the player at 3+ stars, its
-  // spotlight beam landing on the road in front of the car. Low (18 m) and
-  // 30 m ahead, so the fuselage + rotor sit inside the chase camera's
-  // frame (a high heli is above the frame — only its beam would show).
-  // The rotor spin is a pure function of time, so staged shots stay
-  // deterministic.
+  // The pursuit helicopter hovers at 3+ stars, its spotlight beam landing
+  // on the road near the car. In normal play it is 30 m ahead and 18 m up,
+  // so the fuselage + rotor sit inside the chase camera's frame (a high
+  // heli is above the frame — only its beam would show). In the hero shot
+  // (head-on front camera, low at 0.8 m) it hovers 18 m BEHIND the car
+  // (south, toward the sun) at 14 m up, scaled 0.6 — a heli directly
+  // above the car, or a full-size one this close, would be above the
+  // front camera's top edge — and its beam is TILTED toward the car, so
+  // the searchlight shines down onto the silver GT from above and the
+  // pool lands on the car. The rotor spin is a pure function of time, so
+  // staged shots stay deterministic.
   function syncHeli(state, time) {
     if ((state.wanted || 0) < 3) { heliGroup.visible = false; return; }
-    heliGroup.visible = true;
+    heliGroup.visible = false; // DIAGNOSTIC (round 8): heli HIDDEN to test whether the bright orange band at the bottom-centre is the heli beam/pool. Revert after test.
     const p = state.player;
     const fx = p.car ? Math.sin(p.car.angle) : Math.sin(p.yaw || 0);
     const fz = p.car ? Math.cos(p.car.angle) : Math.cos(p.yaw || 0);
-    // Hero shot: FAR + SMALL (55 m ahead, 22 m up, scale 1.0) — the #1
-    // entry's heli is a dark silhouette high above the horizon, NOT a
-    // big object. The beam is rescaled so it still reaches the road
-    // (height = alt, pool at ground level), whatever the altitude.
-    const ahead = state.heroCam ? 55 : 30;
-    const alt = state.heroCam ? 22 : 18;
-    heliBody.scale.set(2.2, 1.6, 5.5);
-    heliRotor.scale.set(11, 0.12, 0.5);
-    heliRotor.position.y = 1.0;
-    heliBeam.scale.y = alt / 18;
-    heliBeam.position.y = -alt / 2;
-    heliPool.position.y = -(alt - 0.1);
+    // Hero shot: 18 m behind the car (ahead = -18), 14 m up, scale 0.6.
+    // The beam is pivoted at the heli (its geometry is translated so its
+    // top is at the origin), so it is tilted toward the car (rotation.x)
+    // and rescaled to the slant distance, and the pool is placed at the
+    // car (local +Z = the car's forward), so the spotlight lands on the
+    // GT. (The beam/pool are children of the group, so the hero scale is
+    // applied ONLY to the body + rotor, never to the group itself.)
+    // Round 8: hero heli scale 0.6 -> 1.1 — the Gemini reference heli is
+    // big and prominent at top-centre (~100 px wide), not a small blob.
+    const ahead = state.heroCam ? -18 : 30;
+    const alt = state.heroCam ? 14 : 18;
+    const hs = state.heroCam ? 1.1 : 1;
+    heliBody.scale.set(2.2 * hs, 1.6 * hs, 5.5 * hs);
+    heliRotor.scale.set(11 * hs, 0.12, 0.5 * hs);
+    heliRotor.position.y = state.heroCam ? 1.1 : 1.0;
+    if (state.heroCam) {
+      heliBeam.rotation.x = -Math.atan2(18, 14); // tilt the beam to the car
+      heliBeam.scale.y = Math.hypot(18, 14) / 18;
+      heliBeam.position.y = 0;
+      heliPool.position.set(0, -(alt - 0.1), 18); // pool ON the car
+    } else {
+      heliBeam.rotation.x = 0;
+      heliBeam.scale.y = alt / 18;
+      heliBeam.position.y = 0;
+      heliPool.position.set(0, -(alt - 0.1), 0);
+    }
     heliGroup.position.set(p.x + fx * ahead, alt, p.z + fz * ahead);
     heliGroup.rotation.y = Math.atan2(fx, fz);
     heliRotor.rotation.y = time * 15;
@@ -962,14 +1059,18 @@ export function createRenderer(canvas) {
     // points (angle). Pitch tilts the look target up/down.
     fwd.set(Math.sin(tyaw), 0, Math.cos(tyaw));
     if (inCar && state.heroCam) {
-      // Hero shot: LOW + CLOSE rear 3/4 chase cam (the #1 entry's angle)
-      // — back 5.8 m, out 3.2 m to the right, 2.4 m up, looking 6 m ahead
-      // of the car — so the GT fills the centre-bottom of the frame
-      // (~31% of the frame width, inside the Top 5's 25-40%), the
-      // asphalt fills the bottom third, and the horizon sits mid-frame.
-      const rx = -fwd.z, rz = fwd.x; // right = (-cos, sin)
-      desiredPos.set(tx - fwd.x * 5.8 + rx * 3.2, 2.4, tz - fwd.z * 5.8 + rz * 3.2);
-      desiredTarget.set(tx + fwd.x * 6, 2.0, tz + fwd.z * 6);
+      // Hero shot (final format, HEAD-ON front camera): the camera sits
+      // STRAIGHT ahead of the car — 6 m along its forward, LOW (0.8 m,
+      // near the car's mid-height, NOT from above), on the car's forward
+      // axis (no side offset, no tilt) — looking back at the car's front,
+      // so the silver GT faces the lens UPRIGHT (headlights left-right,
+      // grille, bumper, plate all readable) and fills the lower frame,
+      // the sun/glow sits behind it in the centre, and the heli is in
+      // the upper frame. The car is STRAIGHT (no drift yaw) — a drifted
+      // car reads as a 3/4 side view, not head-on. Snapped directly (no
+      // smoothing whip after the teleport).
+      desiredPos.set(tx + fwd.x * 6, 0.8, tz + fwd.z * 6);
+      desiredTarget.set(tx + fwd.x * 2, 1.0, tz + fwd.z * 2);
     } else if (inCar) {
       desiredPos.set(tx - fwd.x * 9.5, 4.4, tz - fwd.z * 9.5);
       desiredTarget.set(tx + fwd.x * 9, 1.4, tz + fwd.z * 9);

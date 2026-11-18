@@ -20,7 +20,7 @@ const CASH_COUNT = 3;
 
 // Step machine per mission (targets are landmark names; radius in metres).
 // M1: docks (7 m) -> café (7 m), whole-mission timer 150 s.
-// M2: steal the pink sports car -> garage (9 m).
+// M2: steal the silver sports car -> garage (9 m).
 // M3: safehouse (9 m, +3 stars on start) -> lose the heat (wanted 0).
 const STEPS = {
   1: [
@@ -116,7 +116,7 @@ export function createMissions() {
           { id: 90000 + Math.floor(Math.random() * 1000), isParked: true });
         cars.push(car);
       }
-      car.color = CONFIG.CAR_MODELS.sports.color; // the pink Vespera GT
+      car.color = CONFIG.CAR_MODELS.sports.color; // the silver Vespera GT
       car.missionMarked = true;
       this.markedCarId = car.id;
     },

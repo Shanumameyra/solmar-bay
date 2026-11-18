@@ -450,9 +450,9 @@ console.log('== Staged shots + determinism ==');
     const systems = makeSystems();
     world.state.systems = systems;
     const info = stageShot(name, world, systems);
-    check(`stageShot(${name}) ok`, info.ok === true && info.screen === 'play', JSON.stringify(info));
+    check(`stageShot(${name}) ok`, info.ok === true && (info.screen === 'play' || info.screen === 'title'), JSON.stringify(info));
   }
-  // Determinism: same seed -> same staged state.
+  // Determinism: same seed -> same staged state (all shots).
   function stageOnce(name) {
     const world = createWorld(7);
     const systems = makeSystems();
@@ -460,9 +460,11 @@ console.log('== Staged shots + determinism ==');
     const info = stageShot(name, world, systems);
     return { wanted: info.wanted, money: info.money, police: info.policeCars, peds: info.peds, inCar: info.inCar };
   }
-  const a = stageOnce('hero');
-  const b = stageOnce('hero');
-  check('stageShot(hero) is deterministic', JSON.stringify(a) === JSON.stringify(b), JSON.stringify(a) + ' vs ' + JSON.stringify(b));
+  for (const name of SHOT_NAMES) {
+    const a = stageOnce(name);
+    const b = stageOnce(name);
+    check(`stageShot(${name}) is deterministic`, JSON.stringify(a) === JSON.stringify(b), JSON.stringify(a) + ' vs ' + JSON.stringify(b));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -579,10 +581,10 @@ console.log('== Finisher polish (18 Nov) ==');
       loaded.ok ? `money=${loaded.data.money} fromBak=${loaded.fromBak}` : 'no fallback');
   }
 
-  // Hero staging: the pink GT drives south down the beach boulevard at 3
-  // stars, with five cruisers + the tank on its tail, a traffic jam ahead,
-  // pedestrians in frame, and the hero HUD (CH 5 PAPER MOON, $38,420,
-  // 151 KM/H, Juno Reyes card).
+  // Hero staging: the silver GT drives north up the beach boulevard at 3
+  // stars, shot from the front, drifted, sandwiched by two cruisers + one
+  // chasing behind, and the hero HUD (MISSION 7/7 THE TIDE JOB, $18,450,
+  // 151 KM/H, Lucía Ortega card).
   {
     const w7 = createWorld(7);
     const sys7 = makeSystems();
@@ -593,7 +595,7 @@ console.log('== Finisher polish (18 Nov) ==');
     const bgPeds = (w7.state.peds || []).filter((p) => car && Math.hypot(p.x - car.x, p.z - car.z) < 100).length;
     check('Hero has a few background pedestrians', bgPeds >= 3, bgPeds + ' peds within 100 m');
     check('Hero runs at 3 stars', info.wanted === 3, 'wanted=' + info.wanted);
-    check('Hero has 5 cruisers, no tank', info.policeCars === 5, info.policeCars + ' police cars');
+    check('Hero has 3 cruisers, no tank', info.policeCars === 3, info.policeCars + ' police cars');
     check('Hero HUD override is staged', !!w7.state.heroHud && w7.state.heroHud.carName === 'VESPERA GT',
       w7.state.heroHud ? w7.state.heroHud.carName : 'no heroHud');
     check('Hero camera is staged', w7.state.heroCam === true);
@@ -618,17 +620,18 @@ console.log('== Dossier caps (game/ + screenshots/) ==');
   check('game/ file count <= 993', files <= 993, files + ' files');
   check('game/ bytes <= 48 MiB', bytes <= 50331648, (bytes / 1048576).toFixed(2) + ' MiB');
   const shotsDir = join(ROOT, 'screenshots');
-  // The 1 staged hero shot only — collage.jpg is a derived 2x2 composite, not
+  // 4 staged shots (hero + title + onfoot + mission) — the kit gate
+  // allows 3-4 screenshots. collage.jpg is a derived 2x2 composite, not
   // a staged shot, so it is excluded from the count and the size cap.
   const shots = existsSync(shotsDir)
     ? readdirSync(shotsDir).filter((f) => /\.(png|jpe?g)$/i.test(f) && !f.startsWith('collage')) : [];
-  check('1 screenshot present', shots.length === 1, shots.length + ' found: ' + shots.join(', '));
-  let shotsOk = shots.length === 1;
+  check('3-4 screenshots present', shots.length >= 3 && shots.length <= 4, shots.length + ' found: ' + shots.join(', '));
+  let shotsOk = shots.length >= 3 && shots.length <= 4;
   for (const f of shots) {
     const sz = statSync(join(shotsDir, f)).size;
     if (sz > 262144) { shotsOk = false; console.log(`  ${f} is ${sz} bytes (> 256 KiB)`); }
   }
-  if (shots.length === 1) check('Each screenshot <= 256 KiB', shotsOk);
+  if (shots.length >= 3) check('Each screenshot <= 256 KiB', shotsOk);
 }
 
 // ---------------------------------------------------------------------------
