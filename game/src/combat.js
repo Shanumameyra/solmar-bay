@@ -269,10 +269,10 @@ export function createCombat() {
     },
 
     // Walk over the café or hospital to heal +50 (throttled).
-    medkitCheck(state) {
+    medkitCheck(state, dt) {
       const p = state.player;
       if (!p || (p.hp ?? 100) >= (p.maxHp ?? 100)) return;
-      api.healCd -= 1 / 60;
+      api.healCd -= dt;
       if (api.healCd > 0) return;
       const cafe = landmark(state, 'cafe');
       const hosp = landmark(state, 'hospital');
@@ -287,8 +287,8 @@ export function createCombat() {
     },
 
     // Walk over the gun shop to buy 12 reserve rounds for $50 (throttled).
-    ammoShopCheck(state) {
-      api.shopCd -= 1 / 60;
+    ammoShopCheck(state, dt) {
+      api.shopCd -= dt;
       if (api.shopCd > 0) return;
       if ((state.money ?? 0) < (C.AMMO_PRICE ?? 50)) return;
       if (api.reserveAmmo >= (C.AMMO_PER_BUY ?? 12) * 2) return;
@@ -334,8 +334,8 @@ export function createCombat() {
         if (jp.has('KeyR')) api.reload(state);
       }
       api.copAttack(dt, state);
-      api.medkitCheck(state);
-      api.ammoShopCheck(state);
+      api.medkitCheck(state, dt);
+      api.ammoShopCheck(state, dt);
       // Death check: ANY path that zeroes HP triggers WASTED.
       if (p && (p.hp ?? 100) <= 0 && state.screen !== 'wasted' && state.screen !== 'busted') {
         api.die(state);

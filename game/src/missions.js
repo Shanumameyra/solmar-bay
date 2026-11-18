@@ -63,7 +63,7 @@ export function createMissions() {
     stepIndex: 0,
     timer: 0,
     markedCarId: null,
-    taxi: { phase: 'none', customerId: null, dest: null, destName: '' },
+    taxi: { phase: 'none', customerId: null, dest: null, destName: '', since: 0 },
     pickupsSpawned: false,
     _done: {},
     _nextPending: null,
@@ -76,7 +76,7 @@ export function createMissions() {
       api.stepIndex = 0;
       api.timer = 0;
       api.markedCarId = null;
-      api.taxi = { phase: 'none', customerId: null, dest: null, destName: '' };
+      api.taxi = { phase: 'none', customerId: null, dest: null, destName: '', since: 0 };
       api.pickupsSpawned = false;
       api._done = {};
       api._nextPending = null;
@@ -294,7 +294,7 @@ export function createMissions() {
     _clearTaxi(state) {
       const c = (state.peds || []).find((pd) => pd.id === api.taxi.customerId);
       if (c) c.isTaxiCustomer = false;
-      api.taxi = { phase: 'none', customerId: null, dest: null, destName: '' };
+      api.taxi = { phase: 'none', customerId: null, dest: null, destName: '', since: 0 };
       state.taxiMarker = null;
     },
 
@@ -310,13 +310,21 @@ export function createMissions() {
       if (t.phase === 'none') {
         api._taxiT -= dt;
         if (api._taxiT <= 0) {
+          // Only hail a customer within 80 m: a fare picked from the far
+          // side of the city would instantly "give up waiting" (the 120 m
+          // rule below) before the player could ever reach them.
           const cands = (state.peds || []).filter(
-            (pd) => !pd.isCop && !pd.isTaxiCustomer && (pd.hp ?? 100) > 0 && pd.state !== 'down',
+            (pd) =>
+              !pd.isCop &&
+              !pd.isTaxiCustomer &&
+              (pd.hp ?? 100) > 0 &&
+              pd.state !== 'down' &&
+              distTo(pd.x, pd.z, p.x, p.z) < 80,
           );
           if (cands.length) {
             const c = cands[Math.floor(Math.random() * cands.length)];
             c.isTaxiCustomer = true;
-            api.taxi = { phase: 'pickup', customerId: c.id, dest: null, destName: '' };
+            api.taxi = { phase: 'pickup', customerId: c.id, dest: null, destName: '', since: state.time ?? 0 };
             state.taxiMarker = { x: c.x, z: c.z };
             pushEv(state, { type: 'taxi', text: 'Taxi customer waving — pick them up!' });
             if (api._nextPending == null) {
@@ -346,11 +354,13 @@ export function createMissions() {
           ];
           const [key, name] = dests[Math.floor(Math.random() * dests.length)];
           const L = landmark(state, key);
-          api.taxi = { phase: 'dropoff', customerId: null, dest: { x: L.x, z: L.z }, destName: name };
+          api.taxi = { phase: 'dropoff', customerId: null, dest: { x: L.x, z: L.z }, destName: name, since: state.time ?? 0 };
           state.taxiMarker = { x: L.x, z: L.z };
           state.mission.objective = `Taxi: drop off at ${name}`;
           pushEv(state, { type: 'taxi', text: `Taxi: drop them at ${name}.` });
-        } else if (distTo(p.x, p.z, c.x, c.z) > 120) {
+        } else if (distTo(p.x, p.z, c.x, c.z) > 120 && (state.time ?? 0) - (t.since ?? 0) > 30) {
+          // Give up only after a 30 s grace period (and only when picked
+          // far away — the 80 m hail radius above makes this rare).
           pushEv(state, { type: 'taxi', text: 'Taxi customer gave up waiting.' });
           api._clearTaxi(state);
         }
@@ -387,7 +397,7 @@ export function createMissions() {
           api.stepIndex = 1;
           api.applyStep(state);
           pushEv(state, { type: 'mission', text: 'Package is here — grab it.' });
-        } else if (api.stepIndex === 1 && near('docks', 4)) {
+        } else if (api.stepIndex === 1 && near('docks', 3)) {
           api.stepIndex = 2;
           api.applyStep(state);
           pushEv(state, { type: 'pickup', text: 'Package collected — get it to Rosa!' });

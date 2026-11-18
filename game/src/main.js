@@ -44,7 +44,9 @@ export function buildGame() {
 
   const canvas = document.getElementById('game-canvas');
   const world = createWorld(seed);
-  const state = world.state;
+  // `state` is a let: world.reset() may replace the state object, so
+  // restartGame re-reads world.state (staging does the same in shots.js).
+  let state = world.state;
 
   const renderer = createRenderer(canvas);
   // THE one line the whole city depends on: without it the ground,
@@ -60,6 +62,9 @@ export function buildGame() {
   const hud = createHud(document);
   const minimap = createMinimap(document.getElementById('minimap'));
   const systems = { police, missions, combat, audio, effects };
+  // So addHeat / mission heat route through police even before the first
+  // world.step (shot staging calls world.addHeat before stepping).
+  state.systems = systems;
 
   // Load a save (if any) before the first frame.
   const loaded = loadSave();
@@ -134,6 +139,8 @@ export function buildGame() {
 
   function restartGame() {
     world.reset();
+    state = world.state;
+    ctx.state = state;
     police.reset();
     missions.reset();
     combat.reset();
@@ -253,10 +260,15 @@ export function buildGame() {
     g.speed = Math.round(spd * 3.6);
   }
 
-  // Shot mode: stage, paint twice, signal ready. No game loop — the frame
-  // is static for the screenshot.
+  // Shot mode: stage, settle the camera, paint, signal ready. No game
+  // loop — the frame is static for the screenshot.
+  // The chase camera lerps toward its rest offset on every draw; after a
+  // far teleport two paints leave it hovering over the player (who ends up
+  // under the camera, out of frame). Snap it, then paint several times so
+  // the frame is fully settled before the screenshot.
   function runShot(name) {
     stageShot(name, world, systems);
+    if (renderer.snapCamera) renderer.snapCamera(state);
     // A staged fxBurst (mission glint, muzzle) needs particles advanced
     // once — shot mode has no loop to do it.
     if (state.fxBurst) {
@@ -265,8 +277,7 @@ export function buildGame() {
       effects.burst(b.type, b.x, b.y ?? 1, b.z);
       effects.update(0.35);
     }
-    paint(1 / 60);
-    paint(1 / 60);
+    for (let i = 0; i < 6; i++) paint(1 / 60);
     window.__shotReady = true;
     window.__GTA.shotReady = true;
   }

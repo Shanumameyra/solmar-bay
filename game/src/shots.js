@@ -53,13 +53,20 @@ function putPlayerInCar(world, state, car, x, z, angle) {
 }
 
 export function stageShot(name, world, systems) {
-  const state = world.state;
+  // Re-read world.state AFTER reset(): reset() may replace the state object,
+  // and staging against the stale one would never reach the live world.
+  let state = world.state;
   const seed = state.seed ?? 7;
   const prevRandom = Math.random;
   Math.random = mulberry32(seed);
   try {
     world.reset();
+    state = world.state;
     state.screen = 'play';
+    // World routes addHeat through state.systems.police when it is set;
+    // set it before staging so the chase heat lands on police (not on a
+    // state.wanted that police.step would mirror back to 0).
+    state.systems = systems;
     const input = scriptedInput();
     const stepN = (n, keys) => {
       input.keys = new Set(keys || []);

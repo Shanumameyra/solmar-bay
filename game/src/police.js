@@ -49,14 +49,14 @@ function nextCarId(state) {
 }
 
 function nextPedId(state) {
-  let max = 0;
-  let count = 0;
-  for (const p of state.peds || []) {
-    count++;
-    if (typeof p.id === 'number' && p.id > max) max = p.id;
-  }
-  return Math.max(max, count) + 1;
+  // String ids: the renderer hashes ped.id (charCodeAt), so a numeric id
+  // throws and aborts the whole draw. A module counter keeps them unique
+  // across resets.
+  copSeq += 1;
+  return `cop-${copSeq}`;
 }
+
+let copSeq = 0;
 
 function policeCars(state) {
   return (state.cars || []).filter((c) => c.isPolice || c.kind === 'police');
@@ -171,6 +171,11 @@ export function createPolice() {
     // Kinematic chase: steer toward the player, accelerate to the tier's
     // chase speed, ram the player's car on contact. Sits still while it is
     // a roadblock (_rbT set by the roadblock spawn).
+    // Steering follows an A* path when a nav grid exists: a straight-line
+    // chase through a grid city parks the cruiser nose-first into the first
+    // building on the way, and no turn rate fixes that (the steer-toward-
+    // player pull beats the turn-away push). Direct steering is the
+    // fallback when there is no path.
     pursueCar(dt, state, car) {
       const p = state.player;
       if (!p) return;
@@ -181,21 +186,56 @@ export function createPolice() {
       const dx = p.x - car.x;
       const dz = p.z - car.z;
       const d = Math.hypot(dx, dz) || 0.001;
-      const want = Math.atan2(dx, dz);
-      car.angle += clamp(angDiff(want, car.angle), -2.4 * dt, 2.4 * dt);
+      let tx = p.x;
+      let tz = p.z;
+      if (state.navGrid && typeof state.navGrid.findPath === 'function') {
+        car._pathT = (car._pathT ?? 0) - dt;
+        if (car._pathT <= 0 || !car.path || car.pathIdx >= (car.path?.length ?? 0)) {
+          car._pathT = 1.5;
+          const path = state.navGrid.findPath(car.x, car.z, p.x, p.z);
+          if (path && path.length) {
+            car.path = path;
+            car.pathIdx = 0;
+          }
+        }
+        if (car.path && car.pathIdx < car.path.length) {
+          const wp = car.path[car.pathIdx];
+          tx = wp[0];
+          tz = wp[1];
+          if (Math.hypot(tx - car.x, tz - car.z) < 4) car.pathIdx++;
+        }
+      }
+      const want = Math.atan2(tx - car.x, tz - car.z);
+      if (car._unstickT && state.time < car._unstickT) {
+        // Still escaping a wall: keep turning away, don't steer back into it.
+        car.angle += 3.0 * dt;
+      } else {
+        car.angle += clamp(angDiff(want, car.angle), -2.4 * dt, 2.4 * dt);
+      }
       const tier = api.desiredUnits();
       const chaseTop = (car.topSpeed || CONFIG.CAR.TOP) * (tier.speedMul ?? 1);
-      const target = d > 6 ? chaseTop : Math.min(chaseTop, 12);
-      car.speed = clamp(
-        (car.speed ?? 0) + (target - (car.speed ?? 0)) * Math.min(1, dt * 1.5),
-        0,
-        chaseTop,
-      );
+      // Smooth approach: fast from afar, easing off as it closes, and a
+      // full stop once it pulls up next to the player — otherwise the
+      // cruiser blasts past at 40+ m/s and the bust timer never runs.
+      // Stop inside 4 m: at 6 m/s the 2.4 rad/s turn rate only manages a
+      // 2.5 m turning circle, so a cruiser that keeps driving at close
+      // range falls into a stable orbit around the player instead of
+      // pulling up next to them. Hard brake (22 m/s^2) makes the stop real.
+      const target = d < 4 ? 0 : Math.min(chaseTop, Math.max(6, d * 1.0));
+      if ((car.speed ?? 0) < target) {
+        car.speed = Math.min(target, (car.speed ?? 0) + 14 * dt);
+      } else {
+        car.speed = Math.max(target, (car.speed ?? 0) - 22 * dt);
+      }
       const nx = car.x + Math.sin(car.angle) * car.speed * dt;
       const nz = car.z + Math.cos(car.angle) * car.speed * dt;
       if (inCollider(state, nx, nz, 2.5)) {
-        car.angle += 1.6 * dt;
+        // Turn away HARD (3.0 rad/s beats the 2.4 rad/s steer-toward-player,
+        // which otherwise wins the tug-of-war and parks the cruiser nose-first
+        // into the wall forever) and keep turning for 0.7 s after the block.
+        car.angle += 3.0 * dt;
         car.speed = Math.max(0, car.speed - 12 * dt);
+        car._unstickT = state.time + 0.7;
       } else {
         car.x = clamp(nx, -198, 198);
         car.z = clamp(nz, -198, 198);
@@ -227,6 +267,17 @@ export function createPolice() {
     pursueCop(dt, state, cop) {
       const p = state.player;
       if (!p) return;
+      // Pin the cop's sidewalk loop to its own position (in place, no
+      // allocation): traffic steps the loop BEFORE pursuit each step, and a
+      // walking loop would drag an arrived cop away from the player faster
+      // than the bust timer runs. Pursuit owns the cop's movement.
+      if (cop.loop && cop.loop.length >= 2) {
+        cop.loop[0][0] = cop.x;
+        cop.loop[0][1] = cop.z;
+        cop.loop[1][0] = cop.x;
+        cop.loop[1][1] = cop.z;
+        cop.loopIdx = 0;
+      }
       const d = distTo(cop.x, cop.z, p.x, p.z);
       if (d < 1.6) {
         cop.speed = 0;
